@@ -15,6 +15,7 @@ export type MovementType =
   | 'TRAILER_TO_WAREHOUSE'
 
 export type CodeSource = 'MANUAL' | 'SCANNER'
+export type PhotoKind = 'PASSENGER_SET' | 'LUGGAGE_DETAIL'
 
 export interface Passenger {
   id: string
@@ -42,6 +43,20 @@ export interface Luggage {
   updatedAt: string
 }
 
+export interface PhotoRecord {
+  id: string
+  kind: PhotoKind
+  passengerId: string
+  luggageId: string
+  blob: Blob
+  mimeType: string
+  sizeBytes: number
+  width: number
+  height: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface LuggageMovement {
   id: string
   luggageId: string
@@ -50,6 +65,7 @@ export interface LuggageMovement {
   toStage: LuggageStage
   occurredAt: string
   note: string
+  photoIds?: string[]
 }
 
 export interface PassengerSummary extends Passenger {
@@ -77,4 +93,12 @@ export interface LuggageInput {
   labelColor: string
   luggageType: string
   notes: string
+}
+
+export interface PhotoInput {
+  blob: Blob
+  mimeType: string
+  sizeBytes: number
+  width: number
+  height: number
 }

@@ -3,7 +3,11 @@ import {
   BriefcaseBusiness,
   Camera,
   ChevronDown,
+  Clock3,
   Edit3,
+  Eye,
+  History,
+  ImageOff,
   LoaderCircle,
   MapPin,
   PackagePlus,
@@ -17,24 +21,35 @@ import {
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { BarcodeScannerModal } from '../components/BarcodeScannerModal'
 import { Modal } from '../components/Modal'
+import { PhotoCaptureButtons } from '../components/PhotoCaptureButtons'
 import { CITIES, LABEL_COLORS } from '../constants/cities'
 import { TRAVEL_PERIOD_LABELS, TRAVEL_PERIOD_OPTIONS } from '../constants/travelPeriods'
 import {
   createLuggage,
   deleteLuggagePermanently,
   deletePassengerPermanently,
+  deletePhoto,
+  getPassengerSetPhoto,
+  getPhotosByIds,
   listLuggageByPassenger,
+  listLuggageMovements,
+  listLuggagePhotosByPassenger,
   listPassengers,
+  saveLuggagePhoto,
   savePassenger,
+  savePassengerSetPhoto,
 } from '../data/repository'
 import type {
   CodeSource,
   Luggage,
   LuggageInput,
+  LuggageMovement,
   PassengerInput,
   PassengerSummary,
+  PhotoRecord,
   TravelPeriod,
 } from '../domain/types'
+import { compressPhoto } from '../utils/imageCompression'
 
 const emptyPassengerForm: PassengerInput = {
   fullName: '',
@@ -50,6 +65,27 @@ const emptyLuggageForm: Omit<LuggageInput, 'passengerId'> = {
   labelColor: '',
   luggageType: 'Mala',
   notes: '',
+}
+
+const MOVEMENT_LABELS: Record<LuggageMovement['type'], string> = {
+  REGISTERED_AT_WAREHOUSE: 'Recebida no galpão',
+  WAREHOUSE_TO_TRAILER: 'Galpão → carreta',
+  TRAILER_TO_PASSENGER: 'Carreta → passageiro',
+  PASSENGER_TO_TRAILER: 'Passageiro → carreta',
+  TRAILER_TO_WAREHOUSE: 'Carreta → galpão',
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString('pt-BR', {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+  })
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export function PassengersPage() {
@@ -76,6 +112,20 @@ export function PassengersPage() {
   const [savingLuggage, setSavingLuggage] = useState(false)
   const [scannerOpen, setScannerOpen] = useState(false)
 
+  const [setPhoto, setSetPhoto] = useState<PhotoRecord | null>(null)
+  const [luggagePhotos, setLuggagePhotos] = useState<Record<string, PhotoRecord>>({})
+  const [photoBusyKey, setPhotoBusyKey] = useState<string | null>(null)
+  const [photoError, setPhotoError] = useState('')
+  const [setPhotoUrl, setSetPhotoUrl] = useState('')
+  const [luggagePhotoUrls, setLuggagePhotoUrls] = useState<Record<string, string>>({})
+  const [photoViewer, setPhotoViewer] = useState<{ title: string; url: string } | null>(null)
+
+  const [historyTarget, setHistoryTarget] = useState<Luggage | null>(null)
+  const [historyMovements, setHistoryMovements] = useState<LuggageMovement[]>([])
+  const [historyPhotos, setHistoryPhotos] = useState<PhotoRecord[]>([])
+  const [historyPhotoUrls, setHistoryPhotoUrls] = useState<Record<string, string>>({})
+  const [historyLoading, setHistoryLoading] = useState(false)
+
   const loadPassengers = useCallback(async () => {
     try {
       setPageError('')
@@ -91,6 +141,41 @@ export function PassengersPage() {
   useEffect(() => {
     void loadPassengers()
   }, [loadPassengers])
+
+  useEffect(() => {
+    if (!setPhoto) {
+      setSetPhotoUrl('')
+      return
+    }
+
+    const url = URL.createObjectURL(setPhoto.blob)
+    setSetPhotoUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [setPhoto])
+
+  useEffect(() => {
+    const urls: Record<string, string> = {}
+    for (const [luggageId, photo] of Object.entries(luggagePhotos)) {
+      urls[luggageId] = URL.createObjectURL(photo.blob)
+    }
+    setLuggagePhotoUrls(urls)
+
+    return () => {
+      Object.values(urls).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [luggagePhotos])
+
+  useEffect(() => {
+    const urls: Record<string, string> = {}
+    for (const photo of historyPhotos) {
+      urls[photo.id] = URL.createObjectURL(photo.blob)
+    }
+    setHistoryPhotoUrls(urls)
+
+    return () => {
+      Object.values(urls).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [historyPhotos])
 
   const filteredPassengers = useMemo(() => {
     const normalizedQuery = query
@@ -169,18 +254,35 @@ export function PassengersPage() {
     }
   }
 
+  const loadLuggageWorkspace = useCallback(async (passengerId: string) => {
+    const [luggageResult, setPhotoResult, individualPhotos] = await Promise.all([
+      listLuggageByPassenger(passengerId),
+      getPassengerSetPhoto(passengerId),
+      listLuggagePhotosByPassenger(passengerId),
+    ])
+
+    setLuggage(luggageResult)
+    setSetPhoto(setPhotoResult ?? null)
+    setLuggagePhotos(
+      Object.fromEntries(
+        individualPhotos
+          .filter((photo) => photo.luggageId)
+          .map((photo) => [photo.luggageId as string, photo]),
+      ),
+    )
+  }, [])
+
   const openLuggage = async (passenger: PassengerSummary) => {
     setLuggagePassenger(passenger)
     setLuggageForm(emptyLuggageForm)
     setLuggageFormError('')
-    const result = await listLuggageByPassenger(passenger.id)
-    setLuggage(result)
+    setPhotoError('')
+    await loadLuggageWorkspace(passenger.id)
   }
 
   const refreshLuggage = async () => {
     if (!luggagePassenger) return
-    const result = await listLuggageByPassenger(luggagePassenger.id)
-    setLuggage(result)
+    await loadLuggageWorkspace(luggagePassenger.id)
   }
 
   const handleLuggageSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -211,7 +313,7 @@ export function PassengersPage() {
 
   const handleDeleteLuggage = async (item: Luggage) => {
     const confirmed = window.confirm(
-      `Excluir definitivamente a bagagem ${item.code} e todo o histórico dela?`,
+      `Excluir definitivamente a bagagem ${item.code}, suas fotos e todo o histórico dela?`,
     )
     if (!confirmed) return
 
@@ -231,6 +333,78 @@ export function PassengersPage() {
   const updateCodeSource = (source: CodeSource) => {
     setLuggageForm((current) => ({ ...current, codeSource: source }))
     if (source === 'SCANNER') setScannerOpen(true)
+  }
+
+  const handleSetPhoto = async (file: File) => {
+    if (!luggagePassenger) return
+
+    try {
+      setPhotoBusyKey('set')
+      setPhotoError('')
+      const compressed = await compressPhoto(file)
+      await savePassengerSetPhoto(luggagePassenger.id, compressed)
+      await refreshLuggage()
+    } catch (error) {
+      setPhotoError(error instanceof Error ? error.message : 'Não foi possível salvar a foto do conjunto.')
+    } finally {
+      setPhotoBusyKey(null)
+    }
+  }
+
+  const handleLuggagePhoto = async (item: Luggage, file: File) => {
+    if (!luggagePassenger) return
+
+    try {
+      setPhotoBusyKey(item.id)
+      setPhotoError('')
+      const compressed = await compressPhoto(file)
+      await saveLuggagePhoto(luggagePassenger.id, item.id, compressed)
+      await refreshLuggage()
+    } catch (error) {
+      setPhotoError(error instanceof Error ? error.message : 'Não foi possível salvar a foto da bagagem.')
+    } finally {
+      setPhotoBusyKey(null)
+    }
+  }
+
+  const removeSetPhoto = async () => {
+    if (!setPhoto) return
+    const confirmed = window.confirm('Remover a foto do conjunto de bagagens?')
+    if (!confirmed) return
+
+    await deletePhoto(setPhoto.id)
+    await refreshLuggage()
+  }
+
+  const removeLuggagePhoto = async (item: Luggage) => {
+    const photo = luggagePhotos[item.id]
+    if (!photo) return
+    const confirmed = window.confirm(`Remover a foto individual da bagagem ${item.code}?`)
+    if (!confirmed) return
+
+    await deletePhoto(photo.id)
+    await refreshLuggage()
+  }
+
+  const openHistory = async (item: Luggage) => {
+    try {
+      setHistoryTarget(item)
+      setHistoryLoading(true)
+      const movements = await listLuggageMovements(item.id)
+      const photoIds = Array.from(new Set(movements.flatMap((movement) => movement.photoIds ?? [])))
+      const photos = await getPhotosByIds(photoIds)
+      setHistoryMovements(movements)
+      setHistoryPhotos(photos)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const closeLuggageModal = () => {
+    setLuggagePassenger(null)
+    setSetPhoto(null)
+    setLuggagePhotos({})
+    setPhotoError('')
   }
 
   return (
@@ -455,7 +629,7 @@ export function PassengersPage() {
               <div>
                 <strong>{deleteTarget.fullName}</strong>
                 <p>
-                  Serão excluídas também {deleteTarget.luggageCount} {deleteTarget.luggageCount === 1 ? 'bagagem vinculada' : 'bagagens vinculadas'} e todo o histórico correspondente.
+                  Serão excluídas também {deleteTarget.luggageCount} {deleteTarget.luggageCount === 1 ? 'bagagem vinculada' : 'bagagens vinculadas'}, fotografias e todo o histórico correspondente.
                 </p>
               </div>
             </div>
@@ -474,134 +648,288 @@ export function PassengersPage() {
         open={Boolean(luggagePassenger)}
         title={luggagePassenger ? `Bagagens de ${luggagePassenger.fullName}` : 'Bagagens'}
         subtitle={luggagePassenger ? `${luggagePassenger.city} • ${TRAVEL_PERIOD_LABELS[luggagePassenger.travelPeriod]}` : undefined}
-        onClose={() => setLuggagePassenger(null)}
+        onClose={closeLuggageModal}
         size="large"
       >
-        <div className="luggage-layout">
-          <form className="luggage-form form-stack" onSubmit={handleLuggageSubmit}>
-            <div className="form-section-title">
-              <PackagePlus aria-hidden="true" />
-              <div>
-                <strong>Incluir uma bagagem</strong>
-                <span>O primeiro registro já será salvo como recebida no galpão.</span>
+        <div className="luggage-workspace">
+          <section className={`set-photo-card ${setPhoto ? 'has-photo' : 'is-pending'}`}>
+            <div className="set-photo-card__content">
+              <div className="form-section-title">
+                <Camera aria-hidden="true" />
+                <div>
+                  <strong>Foto do conjunto de bagagens</strong>
+                  <span>
+                    {setPhoto
+                      ? `Salva em ${formatDateTime(setPhoto.createdAt)} • ${formatFileSize(setPhoto.sizeBytes)}`
+                      : 'Obrigatória antes de encerrar o recebimento deste passageiro.'}
+                  </span>
+                </div>
+              </div>
+
+              {setPhoto ? (
+                <div className="photo-status photo-status--ok">Foto vinculada a todos os volumes deste passageiro.</div>
+              ) : (
+                <div className="photo-status photo-status--pending">Foto do conjunto ainda pendente.</div>
+              )}
+
+              <div className="set-photo-actions">
+                <PhotoCaptureButtons
+                  onSelect={handleSetPhoto}
+                  busy={photoBusyKey === 'set'}
+                  cameraLabel={setPhoto ? 'Refazer foto' : 'Tirar foto'}
+                  galleryLabel={setPhoto ? 'Substituir da galeria' : 'Escolher da galeria'}
+                />
+                {setPhoto ? (
+                  <button type="button" className="danger-outline-button" onClick={() => void removeSetPhoto()}>
+                    <Trash2 aria-hidden="true" />
+                    Remover
+                  </button>
+                ) : null}
               </div>
             </div>
 
-            <div className="code-mode-switch" role="group" aria-label="Forma de inserir o código">
-              <button
-                type="button"
-                className={luggageForm.codeSource === 'MANUAL' ? 'is-active' : undefined}
-                onClick={() => updateCodeSource('MANUAL')}
-              >
-                <Barcode aria-hidden="true" />
-                Digitar código
-              </button>
-              <button
-                type="button"
-                className={luggageForm.codeSource === 'SCANNER' ? 'is-active' : undefined}
-                onClick={() => updateCodeSource('SCANNER')}
-              >
-                <Camera aria-hidden="true" />
-                Escanear
-              </button>
-            </div>
+            <button
+              type="button"
+              className="set-photo-preview"
+              onClick={() => setPhotoUrl && setPhotoViewer({ title: 'Foto do conjunto', url: setPhotoUrl })}
+              disabled={!setPhotoUrl}
+              aria-label="Visualizar foto do conjunto"
+            >
+              {setPhotoUrl ? <img src={setPhotoUrl} alt="Conjunto de bagagens do passageiro" /> : <ImageOff aria-hidden="true" />}
+              {setPhotoUrl ? <span><Eye aria-hidden="true" /> Ampliar</span> : null}
+            </button>
+          </section>
 
-            <label className="field">
-              <span>Código do lacre *</span>
-              <div className="code-input-row">
-                <input
-                  value={luggageForm.code}
-                  onChange={(event) => setLuggageForm((current) => ({ ...current, code: event.target.value, codeSource: 'MANUAL' }))}
-                  placeholder="Ex.: 0005301"
-                  autoComplete="off"
-                />
-                <button type="button" className="scan-button" onClick={() => setScannerOpen(true)} aria-label="Abrir câmera para escanear">
+          {photoError ? <div className="alert alert--danger">{photoError}</div> : null}
+
+          <div className="luggage-layout">
+            <form className="luggage-form form-stack" onSubmit={handleLuggageSubmit}>
+              <div className="form-section-title">
+                <PackagePlus aria-hidden="true" />
+                <div>
+                  <strong>Incluir uma bagagem</strong>
+                  <span>O primeiro registro já será salvo como recebida no galpão.</span>
+                </div>
+              </div>
+
+              <div className="code-mode-switch" role="group" aria-label="Forma de inserir o código">
+                <button
+                  type="button"
+                  className={luggageForm.codeSource === 'MANUAL' ? 'is-active' : undefined}
+                  onClick={() => updateCodeSource('MANUAL')}
+                >
+                  <Barcode aria-hidden="true" />
+                  Digitar código
+                </button>
+                <button
+                  type="button"
+                  className={luggageForm.codeSource === 'SCANNER' ? 'is-active' : undefined}
+                  onClick={() => updateCodeSource('SCANNER')}
+                >
                   <Camera aria-hidden="true" />
+                  Escanear
                 </button>
               </div>
-            </label>
 
-            <div className="form-grid">
               <label className="field">
-                <span>Cor da etiqueta ou lacre *</span>
-                <input
-                  list="label-colors"
-                  value={luggageForm.labelColor}
-                  onChange={(event) => setLuggageForm((current) => ({ ...current, labelColor: event.target.value }))}
-                  placeholder="Ex.: Verde"
+                <span>Código do lacre *</span>
+                <div className="code-input-row">
+                  <input
+                    value={luggageForm.code}
+                    onChange={(event) => setLuggageForm((current) => ({ ...current, code: event.target.value, codeSource: 'MANUAL' }))}
+                    placeholder="Ex.: 0005301"
+                    autoComplete="off"
+                  />
+                  <button type="button" className="scan-button" onClick={() => setScannerOpen(true)} aria-label="Abrir câmera para escanear">
+                    <Camera aria-hidden="true" />
+                  </button>
+                </div>
+              </label>
+
+              <div className="form-grid">
+                <label className="field">
+                  <span>Cor da etiqueta ou lacre *</span>
+                  <input
+                    list="label-colors"
+                    value={luggageForm.labelColor}
+                    onChange={(event) => setLuggageForm((current) => ({ ...current, labelColor: event.target.value }))}
+                    placeholder="Ex.: Verde"
+                  />
+                  <datalist id="label-colors">
+                    {LABEL_COLORS.map((color) => <option key={color} value={color} />)}
+                  </datalist>
+                </label>
+
+                <label className="field">
+                  <span>Tipo</span>
+                  <select
+                    value={luggageForm.luggageType}
+                    onChange={(event) => setLuggageForm((current) => ({ ...current, luggageType: event.target.value }))}
+                  >
+                    <option>Mala</option>
+                    <option>Bolsa</option>
+                    <option>Mochila</option>
+                    <option>Caixa</option>
+                    <option>Sacola</option>
+                    <option>Outro</option>
+                  </select>
+                </label>
+              </div>
+
+              <label className="field">
+                <span>Observação da bagagem</span>
+                <textarea
+                  rows={2}
+                  value={luggageForm.notes}
+                  onChange={(event) => setLuggageForm((current) => ({ ...current, notes: event.target.value }))}
+                  placeholder="Ex.: mala preta grande com fita vermelha"
                 />
-                <datalist id="label-colors">
-                  {LABEL_COLORS.map((color) => <option key={color} value={color} />)}
-                </datalist>
               </label>
 
-              <label className="field">
-                <span>Tipo</span>
-                <select
-                  value={luggageForm.luggageType}
-                  onChange={(event) => setLuggageForm((current) => ({ ...current, luggageType: event.target.value }))}
-                >
-                  <option>Mala</option>
-                  <option>Bolsa</option>
-                  <option>Mochila</option>
-                  <option>Caixa</option>
-                  <option>Sacola</option>
-                  <option>Outro</option>
-                </select>
-              </label>
-            </div>
+              {luggageFormError ? <div className="alert alert--danger">{luggageFormError}</div> : null}
 
-            <label className="field">
-              <span>Observação da bagagem</span>
-              <textarea
-                rows={2}
-                value={luggageForm.notes}
-                onChange={(event) => setLuggageForm((current) => ({ ...current, notes: event.target.value }))}
-                placeholder="Ex.: mala preta grande com fita vermelha"
-              />
-            </label>
+              <button type="submit" className="primary-button" disabled={savingLuggage}>
+                {savingLuggage ? <LoaderCircle className="spin" /> : <PackagePlus />}
+                Cadastrar bagagem
+              </button>
+            </form>
 
-            {luggageFormError ? <div className="alert alert--danger">{luggageFormError}</div> : null}
-
-            <button type="submit" className="primary-button" disabled={savingLuggage}>
-              {savingLuggage ? <LoaderCircle className="spin" /> : <PackagePlus />}
-              Cadastrar bagagem
-            </button>
-          </form>
-
-          <section className="luggage-list-panel">
-            <div className="form-section-title">
-              <BriefcaseBusiness aria-hidden="true" />
-              <div>
-                <strong>Volumes já cadastrados</strong>
-                <span>{luggage.length} {luggage.length === 1 ? 'volume' : 'volumes'}</span>
-              </div>
-            </div>
-
-            {luggage.length === 0 ? (
-              <div className="mini-empty-state">
+            <section className="luggage-list-panel">
+              <div className="form-section-title">
                 <BriefcaseBusiness aria-hidden="true" />
-                <p>Nenhuma bagagem cadastrada para este passageiro.</p>
+                <div>
+                  <strong>Volumes já cadastrados</strong>
+                  <span>{luggage.length} {luggage.length === 1 ? 'volume' : 'volumes'}</span>
+                </div>
               </div>
-            ) : (
-              <div className="luggage-list">
-                {luggage.map((item, index) => (
-                  <article className="luggage-item" key={item.id}>
-                    <div className="luggage-number">{index + 1}</div>
-                    <div className="luggage-item__content">
-                      <strong>{item.code}</strong>
-                      <span>{item.luggageType} • {item.labelColor}</span>
-                      <small>Recebida no galpão em {new Date(item.createdAt).toLocaleString('pt-BR')}</small>
-                    </div>
-                    <button type="button" className="icon-danger-button" onClick={() => void handleDeleteLuggage(item)} aria-label={`Excluir bagagem ${item.code}`}>
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+
+              {luggage.length === 0 ? (
+                <div className="mini-empty-state">
+                  <BriefcaseBusiness aria-hidden="true" />
+                  <p>Nenhuma bagagem cadastrada para este passageiro.</p>
+                </div>
+              ) : (
+                <div className="luggage-list">
+                  {luggage.map((item, index) => {
+                    const individualPhoto = luggagePhotos[item.id]
+                    const individualPhotoUrl = luggagePhotoUrls[item.id]
+                    return (
+                      <article className="luggage-item luggage-item--with-photo" key={item.id}>
+                        <button
+                          type="button"
+                          className="luggage-photo-thumb"
+                          onClick={() => individualPhotoUrl && setPhotoViewer({ title: `Bagagem ${item.code}`, url: individualPhotoUrl })}
+                          disabled={!individualPhotoUrl}
+                          aria-label={`Visualizar foto da bagagem ${item.code}`}
+                        >
+                          {individualPhotoUrl ? <img src={individualPhotoUrl} alt={`Bagagem ${item.code}`} /> : <Camera aria-hidden="true" />}
+                        </button>
+
+                        <div className="luggage-number">{index + 1}</div>
+                        <div className="luggage-item__content">
+                          <strong>{item.code}</strong>
+                          <span>{item.luggageType} • {item.labelColor}</span>
+                          <small>Recebida no galpão em {formatDateTime(item.createdAt)}</small>
+                          <em>{individualPhoto ? 'Foto individual vinculada' : 'Foto individual opcional'}</em>
+                        </div>
+
+                        <div className="luggage-item__actions">
+                          <PhotoCaptureButtons
+                            compact
+                            busy={photoBusyKey === item.id}
+                            onSelect={(file) => handleLuggagePhoto(item, file)}
+                            cameraLabel={individualPhoto ? 'Refazer' : 'Foto'}
+                            galleryLabel="Galeria"
+                          />
+                          {individualPhoto ? (
+                            <button type="button" className="mini-action-button mini-action-button--danger" onClick={() => void removeLuggagePhoto(item)} title="Remover foto individual">
+                              <Trash2 aria-hidden="true" />
+                              <span>Remover foto</span>
+                            </button>
+                          ) : null}
+                          <button type="button" className="mini-action-button" onClick={() => void openHistory(item)} title="Abrir histórico">
+                            <History aria-hidden="true" />
+                            <span>Histórico</span>
+                          </button>
+                          <button type="button" className="mini-action-button mini-action-button--danger" onClick={() => void handleDeleteLuggage(item)} title="Excluir bagagem">
+                            <Trash2 aria-hidden="true" />
+                            <span>Excluir</span>
+                          </button>
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
         </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(historyTarget)}
+        title={historyTarget ? `Histórico da bagagem ${historyTarget.code}` : 'Histórico da bagagem'}
+        subtitle="Linha do tempo completa deste volume."
+        onClose={() => {
+          setHistoryTarget(null)
+          setHistoryMovements([])
+          setHistoryPhotos([])
+        }}
+        size="large"
+      >
+        {historyLoading ? (
+          <div className="loading-state"><LoaderCircle className="spin" /> Carregando histórico...</div>
+        ) : (
+          <div className="history-timeline">
+            {historyMovements.map((movement) => {
+              const photos = historyPhotos.filter((photo) => (movement.photoIds ?? []).includes(photo.id))
+              return (
+                <article className="history-entry" key={movement.id}>
+                  <div className="history-entry__marker"><Clock3 aria-hidden="true" /></div>
+                  <div className="history-entry__body">
+                    <div className="history-entry__heading">
+                      <strong>{MOVEMENT_LABELS[movement.type]}</strong>
+                      <time>{formatDateTime(movement.occurredAt)}</time>
+                    </div>
+                    <p>{movement.note}</p>
+                    {photos.length > 0 ? (
+                      <div className="history-photo-grid">
+                        {photos.map((photo) => (
+                          <button
+                            type="button"
+                            key={photo.id}
+                            onClick={() => setPhotoViewer({
+                              title: photo.kind === 'PASSENGER_SET' ? 'Foto do conjunto' : 'Foto individual da bagagem',
+                              url: historyPhotoUrls[photo.id],
+                            })}
+                          >
+                            <img src={historyPhotoUrls[photo.id]} alt="Fotografia vinculada à movimentação" />
+                            <span>{photo.kind === 'PASSENGER_SET' ? 'Conjunto' : 'Individual'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <small className="history-no-photo">Nenhuma fotografia vinculada a esta etapa.</small>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(photoViewer)}
+        title={photoViewer?.title ?? 'Fotografia'}
+        onClose={() => setPhotoViewer(null)}
+        size="large"
+      >
+        {photoViewer ? (
+          <div className="photo-viewer">
+            <img src={photoViewer.url} alt={photoViewer.title} />
+          </div>
+        ) : null}
       </Modal>
 
       <BarcodeScannerModal

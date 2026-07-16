@@ -1511,3 +1511,377 @@ svg {
     transition: none !important;
   }
 }
+
+/* Fase 3: fotografias e histórico */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+}
+
+.luggage-workspace {
+  display: grid;
+  gap: 18px;
+}
+
+.set-photo-card {
+  display: grid;
+  gap: 14px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: #f8fafb;
+}
+
+.set-photo-card.is-pending {
+  border-color: #ecc98f;
+  background: #fffaf1;
+}
+
+.set-photo-card.has-photo {
+  border-color: #bfe2d2;
+  background: #f4fbf8;
+}
+
+.set-photo-card__content {
+  display: grid;
+  align-content: start;
+  gap: 11px;
+}
+
+.photo-status {
+  width: fit-content;
+  padding: 6px 9px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+
+.photo-status--ok {
+  color: var(--green-700);
+  background: var(--green-100);
+}
+
+.photo-status--pending {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.set-photo-actions,
+.photo-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.set-photo-actions {
+  align-items: center;
+}
+
+.photo-buttons--compact {
+  display: contents;
+}
+
+.danger-outline-button,
+.mini-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  color: var(--ink-700);
+  background: #fff;
+  font-weight: 800;
+}
+
+.danger-outline-button {
+  min-height: 46px;
+  padding: 10px 13px;
+  border-color: #f0b7bb;
+  border-radius: 13px;
+  color: var(--red-700);
+}
+
+.danger-outline-button svg,
+.mini-action-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.set-photo-preview {
+  position: relative;
+  display: grid;
+  min-height: 150px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px dashed #c4d1db;
+  border-radius: 14px;
+  color: var(--ink-500);
+  background: #eef3f7;
+}
+
+.set-photo-preview:disabled {
+  cursor: default;
+}
+
+.set-photo-preview > svg {
+  width: 38px;
+  height: 38px;
+}
+
+.set-photo-preview img {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+}
+
+.set-photo-preview span {
+  position: absolute;
+  right: 9px;
+  bottom: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  color: #fff;
+  background: rgba(8, 23, 38, 0.76);
+  font-size: 0.66rem;
+  font-weight: 850;
+}
+
+.set-photo-preview span svg {
+  width: 14px;
+  height: 14px;
+}
+
+.luggage-item.luggage-item--with-photo {
+  grid-template-columns: 54px 32px minmax(0, 1fr);
+  align-items: start;
+}
+
+.luggage-photo-thumb {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  overflow: hidden;
+  place-items: center;
+  border: 1px dashed #c4d1db;
+  border-radius: 12px;
+  color: var(--ink-500);
+  background: #eef3f7;
+}
+
+.luggage-photo-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.luggage-photo-thumb svg {
+  width: 21px;
+  height: 21px;
+}
+
+.luggage-item__content em {
+  display: block;
+  margin-top: 4px;
+  color: var(--blue-600);
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.luggage-item__actions {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #edf1f4;
+}
+
+.mini-action-button {
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  font-size: 0.66rem;
+}
+
+.mini-action-button--danger {
+  border-color: #f2c9cc;
+  color: var(--red-700);
+  background: var(--red-100);
+}
+
+.photo-viewer {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  border-radius: 15px;
+  background: #08111b;
+}
+
+.photo-viewer img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - 190px);
+  border-radius: 12px;
+  object-fit: contain;
+}
+
+.history-timeline {
+  display: grid;
+  gap: 0;
+}
+
+.history-entry {
+  position: relative;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  padding-bottom: 18px;
+}
+
+.history-entry:not(:last-child)::before {
+  position: absolute;
+  top: 34px;
+  bottom: 0;
+  left: 17px;
+  width: 2px;
+  content: '';
+  background: #d7e0e7;
+}
+
+.history-entry__marker {
+  z-index: 1;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 12px;
+  color: #fff;
+  background: var(--navy-900);
+}
+
+.history-entry__marker svg {
+  width: 18px;
+  height: 18px;
+}
+
+.history-entry__body {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f8fafb;
+}
+
+.history-entry__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.history-entry__heading strong {
+  font-size: 0.85rem;
+}
+
+.history-entry__heading time {
+  flex: 0 0 auto;
+  color: var(--ink-500);
+  font-size: 0.64rem;
+  font-weight: 750;
+}
+
+.history-entry__body p {
+  margin: 7px 0 0;
+  color: var(--ink-700);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.history-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.history-photo-grid button {
+  position: relative;
+  min-height: 86px;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: #e8eef2;
+}
+
+.history-photo-grid img {
+  width: 100%;
+  height: 100px;
+  object-fit: cover;
+}
+
+.history-photo-grid span {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(8, 23, 38, 0.74);
+  font-size: 0.58rem;
+  font-weight: 850;
+}
+
+.history-no-photo {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink-500);
+  font-size: 0.67rem;
+}
+
+@media (min-width: 720px) {
+  .set-photo-card {
+    grid-template-columns: minmax(0, 1.35fr) minmax(210px, 0.65fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .set-photo-actions,
+  .photo-buttons:not(.photo-buttons--compact) {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .set-photo-actions .secondary-button,
+  .set-photo-actions .danger-outline-button {
+    width: 100%;
+  }
+
+  .luggage-item.luggage-item--with-photo {
+    grid-template-columns: 50px 30px minmax(0, 1fr);
+  }
+
+  .luggage-photo-thumb {
+    width: 50px;
+    height: 50px;
+  }
+
+  .mini-action-button span {
+    display: none;
+  }
+
+  .history-entry__heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
