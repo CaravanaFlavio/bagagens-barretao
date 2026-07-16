@@ -1,0 +1,32 @@
+export const CITIES = [
+  'Belo Horizonte',
+  'Betim',
+  'Carmópolis de Minas',
+  'Cláudio',
+  'Contagem',
+  'Cruzília',
+  'Divinópolis',
+  'Igarapé',
+  'Itaguara',
+  'Itaúna',
+  'Itatiaiuçu',
+  'Nova Serrana',
+  'Oliveira',
+  'Ritápolis',
+  'Santa Terezinha',
+  'São João del-Rei',
+  'São Tiago',
+] as const
+
+export const LABEL_COLORS = [
+  'Azul',
+  'Amarelo',
+  'Verde',
+  'Vermelho',
+  'Preto',
+  'Branco',
+  'Laranja',
+  'Roxo',
+  'Rosa',
+  'Cinza',
+] as const
