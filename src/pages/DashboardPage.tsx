@@ -48,8 +48,8 @@ export function DashboardPage({ isOnline }: DashboardPageProps) {
 
   const operationCards: OperationCardProps[] = [
     {
-      title: 'Receber no galpão',
-      description: 'Localizar o passageiro, cadastrar os volumes, lacres e foto do conjunto.',
+      title: 'Galpão → carreta',
+      description: 'Conferir cada volume carregado na carreta antes da saída.',
       path: '/recebimento',
       icon: <PackageOpen aria-hidden="true" />,
       sequence: '1',

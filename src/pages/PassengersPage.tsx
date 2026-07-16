@@ -23,6 +23,7 @@ import { BarcodeScannerModal } from '../components/BarcodeScannerModal'
 import { Modal } from '../components/Modal'
 import { PhotoCaptureButtons } from '../components/PhotoCaptureButtons'
 import { CITIES, LABEL_COLORS } from '../constants/cities'
+import { STAGE_LABELS } from '../constants/operations'
 import { TRAVEL_PERIOD_LABELS, TRAVEL_PERIOD_OPTIONS } from '../constants/travelPeriods'
 import {
   createLuggage,
@@ -44,6 +45,7 @@ import type {
   Luggage,
   LuggageInput,
   LuggageMovement,
+  LuggageStage,
   PassengerInput,
   PassengerSummary,
   PhotoRecord,
@@ -74,6 +76,14 @@ const MOVEMENT_LABELS: Record<LuggageMovement['type'], string> = {
   PASSENGER_TO_TRAILER: 'Passageiro → carreta',
   TRAILER_TO_WAREHOUSE: 'Carreta → galpão',
 }
+
+const PASSENGER_STAGE_ORDER: LuggageStage[] = [
+  'WAREHOUSE_INITIAL',
+  'TRAILER_OUTBOUND',
+  'WITH_PASSENGER',
+  'TRAILER_RETURN',
+  'WAREHOUSE_RETURN',
+]
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString('pt-BR', {
@@ -513,6 +523,33 @@ export function PassengersPage() {
                   <strong>{passenger.luggageCount}</strong>
                   <span>{passenger.luggageCount === 1 ? 'bagagem cadastrada' : 'bagagens cadastradas'}</span>
                 </div>
+
+                {passenger.luggageCount > 0 ? (
+                  <div className="passenger-stage-summary" aria-label="Situação atual das bagagens">
+                    {PASSENGER_STAGE_ORDER.map((stage) => {
+                      const count = passenger.luggageStageCounts[stage]
+                      if (count === 0) return null
+                      return (
+                        <span className={`passenger-stage-chip stage-${stage.toLowerCase()}`} key={stage}>
+                          <strong>{count}</strong>
+                          {STAGE_LABELS[stage]}
+                        </span>
+                      )
+                    })}
+                  </div>
+                ) : null}
+
+                {passenger.luggageCount > 0 ? (
+                  <button
+                    type="button"
+                    className="passenger-history-button"
+                    onClick={() => void openLuggage(passenger)}
+                  >
+                    <History aria-hidden="true" />
+                    Ver bagagens e histórico
+                  </button>
+                ) : null}
+
                 {passenger.notes ? <p className="passenger-notes">{passenger.notes}</p> : null}
               </div>
 
@@ -829,7 +866,10 @@ export function PassengersPage() {
                         <div className="luggage-item__content">
                           <strong>{item.code}</strong>
                           <span>{item.luggageType} • {item.labelColor}</span>
-                          <small>Recebida no galpão em {formatDateTime(item.createdAt)}</small>
+                          <small>Cadastrada em {formatDateTime(item.createdAt)}</small>
+                          <span className={`luggage-current-stage stage-${item.currentStage.toLowerCase()}`}>
+                            {STAGE_LABELS[item.currentStage]}
+                          </span>
                           <em>{individualPhoto ? 'Foto individual vinculada' : 'Foto individual opcional'}</em>
                         </div>
 

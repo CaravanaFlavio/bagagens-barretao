@@ -2,12 +2,9 @@ import { useEffect, useState } from 'react'
 import {
   AlertTriangle,
   Building2,
-  MapPinned,
-  PackageOpen,
   Search,
   Settings,
   ShieldCheck,
-  Truck,
 } from 'lucide-react'
 import { Link, Route, Routes } from 'react-router'
 import { AppHeader } from './components/AppHeader'
@@ -15,6 +12,8 @@ import { BottomNavigation } from './components/BottomNavigation'
 import { DashboardPage } from './pages/DashboardPage'
 import { PassengersPage } from './pages/PassengersPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
+import { BarretosPage } from './pages/BarretosPage'
+import { LuggageOperationPage } from './pages/LuggageOperationPage'
 import './App.css'
 
 function useConnectionStatus() {
@@ -47,57 +46,28 @@ function App() {
           <Route path="/passageiros" element={<PassengersPage />} />
           <Route
             path="/recebimento"
-            element={
-              <PlaceholderPage
-                title="Receber no galpão"
-                subtitle="Localize o passageiro já cadastrado e registre os volumes recebidos."
-                icon={<PackageOpen aria-hidden="true" />}
-                nextPhase="Esta operação reaproveitará o cadastro de bagagens já criado na tela de passageiros e acrescentará foto do conjunto e conferência por cidade."
-                checklist={[
-                  'Selecionar a cidade de origem',
-                  'Localizar o passageiro',
-                  'Cadastrar ou conferir os lacres',
-                  'Fotografar o conjunto',
-                  'Finalizar com alerta de passageiros sem bagagem',
-                ]}
-              />
-            }
+            element={<LuggageOperationPage operationKey="WAREHOUSE_TO_TRAILER" />}
+          />
+          <Route path="/barretos" element={<BarretosPage />} />
+          <Route
+            path="/barretos/entrega-primeira"
+            element={<LuggageOperationPage operationKey="DELIVER_FIRST_WEEK" />}
           />
           <Route
-            path="/barretos"
-            element={
-              <PlaceholderPage
-                title="Operação em Barretos"
-                subtitle="Entrega e recolhimento separados por semana."
-                icon={<MapPinned aria-hidden="true" />}
-                nextPhase="A lista mostrará somente os passageiros daquela etapa: entrega da 1ª, recolhimento da 1ª, entrega da 2ª ou recolhimento da 2ª."
-                checklist={[
-                  'Mostrar somente quem pertence à etapa',
-                  'Destacar passageiros das duas semanas',
-                  'Ler lacres em sequência',
-                  'Bloquear período incompatível',
-                  'Finalizar apontando volumes que sobraram',
-                ]}
-              />
-            }
+            path="/barretos/recolhimento-primeira"
+            element={<LuggageOperationPage operationKey="COLLECT_FIRST_WEEK" />}
+          />
+          <Route
+            path="/barretos/entrega-segunda"
+            element={<LuggageOperationPage operationKey="DELIVER_SECOND_WEEK" />}
+          />
+          <Route
+            path="/barretos/recolhimento-segunda"
+            element={<LuggageOperationPage operationKey="COLLECT_SECOND_WEEK" />}
           />
           <Route
             path="/retorno"
-            element={
-              <PlaceholderPage
-                title="Retorno ao galpão"
-                subtitle="Conferência da carreta e separação das bagagens por município."
-                icon={<Truck aria-hidden="true" />}
-                nextPhase="O aplicativo comparará o total esperado com o descarregado e mostrará qualquer volume ainda não localizado."
-                checklist={[
-                  'Ler cada lacre na descarga',
-                  'Separar fisicamente por cidade',
-                  'Mostrar o que ainda consta na carreta',
-                  'Registrar divergências',
-                  'Gerar relatório final por bagagem',
-                ]}
-              />
-            }
+            element={<LuggageOperationPage operationKey="TRAILER_TO_WAREHOUSE" />}
           />
           <Route
             path="/entrega-cidades"
@@ -106,7 +76,7 @@ function App() {
                 title="Entregar às cidades"
                 subtitle="Transferência final das cargas aos responsáveis pelos caminhões."
                 icon={<Building2 aria-hidden="true" />}
-                nextPhase="A confirmação registrará a cidade, o total de volumes, o responsável, o veículo, o dia e o horário."
+                nextPhase="Depois da conferência do retorno, criaremos a separação por cidade e o comprovante de transferência ao caminhão responsável."
                 checklist={[
                   'Selecionar a cidade',
                   'Conferir os volumes',
@@ -122,9 +92,9 @@ function App() {
             element={
               <PlaceholderPage
                 title="Pendências"
-                subtitle="Alertas que precisam ser resolvidos antes de finalizar uma etapa."
+                subtitle="Alertas consolidados de todas as etapas da operação."
                 icon={<AlertTriangle aria-hidden="true" />}
-                nextPhase="Aqui aparecerão passageiros sem bagagem, volumes que sobraram, códigos duplicados e movimentações incompatíveis."
+                nextPhase="As conferências já apontam divergências dentro de cada etapa. Depois reuniremos tudo também nesta tela única."
                 checklist={[
                   'Passageiro sem bagagem cadastrada',
                   'Bagagem que não foi movimentada',

@@ -3,6 +3,8 @@ import type {
   Luggage,
   LuggageMovement,
   LuggageStage,
+  OperationClosure,
+  OperationKey,
   Passenger,
   PhotoKind,
   PhotoRecord,
@@ -45,13 +47,21 @@ interface BagagensDatabase extends DBSchema {
       'by-kind': PhotoKind
     }
   }
+  operationClosures: {
+    key: string
+    value: OperationClosure
+    indexes: {
+      'by-operation': OperationKey
+      'by-date': string
+    }
+  }
 }
 
 let databasePromise: Promise<IDBPDatabase<BagagensDatabase>> | null = null
 
 export function getDatabase() {
   if (!databasePromise) {
-    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', 2, {
+    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', 3, {
       upgrade(database, oldVersion) {
         if (oldVersion < 1) {
           const passengerStore = database.createObjectStore('passengers', {
@@ -82,6 +92,14 @@ export function getDatabase() {
           photoStore.createIndex('by-passenger', 'passengerId')
           photoStore.createIndex('by-luggage', 'luggageId')
           photoStore.createIndex('by-kind', 'kind')
+        }
+
+        if (oldVersion < 3) {
+          const closureStore = database.createObjectStore('operationClosures', {
+            keyPath: 'id',
+          })
+          closureStore.createIndex('by-operation', 'operationKey')
+          closureStore.createIndex('by-date', 'finalizedAt')
         }
       },
     })

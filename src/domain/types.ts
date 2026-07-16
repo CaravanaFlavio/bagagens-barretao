@@ -14,8 +14,17 @@ export type MovementType =
   | 'PASSENGER_TO_TRAILER'
   | 'TRAILER_TO_WAREHOUSE'
 
+export type OperationKey =
+  | 'WAREHOUSE_TO_TRAILER'
+  | 'DELIVER_FIRST_WEEK'
+  | 'COLLECT_FIRST_WEEK'
+  | 'DELIVER_SECOND_WEEK'
+  | 'COLLECT_SECOND_WEEK'
+  | 'TRAILER_TO_WAREHOUSE'
+
 export type CodeSource = 'MANUAL' | 'SCANNER'
-export type PhotoKind = 'PASSENGER_SET' | 'LUGGAGE_DETAIL'
+export type PhotoKind = 'PASSENGER_SET' | 'LUGGAGE_DETAIL' | 'OPERATION_EVIDENCE'
+export type OperationViewFilter = 'PENDING' | 'COMPLETED' | 'ALL'
 
 export interface Passenger {
   id: string
@@ -48,6 +57,7 @@ export interface PhotoRecord {
   kind: PhotoKind
   passengerId: string
   luggageId: string
+  operationKey?: OperationKey
   blob: Blob
   mimeType: string
   sizeBytes: number
@@ -61,15 +71,30 @@ export interface LuggageMovement {
   id: string
   luggageId: string
   type: MovementType
+  operationKey?: OperationKey
   fromStage: LuggageStage | null
   toStage: LuggageStage
   occurredAt: string
   note: string
   photoIds?: string[]
+  isException?: boolean
+  exceptionReason?: string
+}
+
+export interface OperationClosure {
+  id: string
+  operationKey: OperationKey
+  finalizedAt: string
+  note: string
+  completedCount: number
+  remainingLuggageIds: string[]
+  unexpectedLuggageIds: string[]
+  passengerIdsWithoutLuggage: string[]
 }
 
 export interface PassengerSummary extends Passenger {
   luggageCount: number
+  luggageStageCounts: Record<LuggageStage, number>
 }
 
 export interface DashboardSummary {
@@ -101,4 +126,45 @@ export interface PhotoInput {
   sizeBytes: number
   width: number
   height: number
+}
+
+export interface OperationLuggageItem extends Luggage {
+  passenger: Passenger
+  isPending: boolean
+  isCompleted: boolean
+  isUnexpected: boolean
+}
+
+export interface OperationPassengerGroup {
+  passenger: Passenger
+  luggage: OperationLuggageItem[]
+  totalCount: number
+  pendingCount: number
+  completedCount: number
+  unexpectedCount: number
+}
+
+export interface OperationSnapshot {
+  operationKey: OperationKey
+  groups: OperationPassengerGroup[]
+  totalLuggage: number
+  pendingLuggage: number
+  completedLuggage: number
+  unexpectedLuggage: number
+  passengersWithoutLuggage: Passenger[]
+  latestClosure?: OperationClosure
+}
+
+export type OperationScanStatus =
+  | 'READY'
+  | 'REQUIRES_CONFIRMATION'
+  | 'ALREADY_COMPLETED'
+  | 'NOT_FOUND'
+  | 'BLOCKED'
+
+export interface OperationScanCheck {
+  status: OperationScanStatus
+  message: string
+  luggage?: Luggage
+  passenger?: Passenger
 }
