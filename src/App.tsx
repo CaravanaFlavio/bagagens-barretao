@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import {
-  AlertTriangle,
   Building2,
   Search,
   Settings,
@@ -12,6 +11,7 @@ import { BottomNavigation } from './components/BottomNavigation'
 import { DashboardPage } from './pages/DashboardPage'
 import { PassengersPage } from './pages/PassengersPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
+import { PendenciesPage } from './pages/PendenciesPage'
 import { BarretosPage } from './pages/BarretosPage'
 import { LuggageOperationPage } from './pages/LuggageOperationPage'
 import './App.css'
@@ -87,24 +87,7 @@ function App() {
               />
             }
           />
-          <Route
-            path="/pendencias"
-            element={
-              <PlaceholderPage
-                title="Pendências"
-                subtitle="Alertas consolidados de todas as etapas da operação."
-                icon={<AlertTriangle aria-hidden="true" />}
-                nextPhase="As conferências já apontam divergências dentro de cada etapa. Depois reuniremos tudo também nesta tela única."
-                checklist={[
-                  'Passageiro sem bagagem cadastrada',
-                  'Bagagem que não foi movimentada',
-                  'Quantidade diferente do esperado',
-                  'Período incompatível',
-                  'Exceção confirmada com justificativa',
-                ]}
-              />
-            }
-          />
+          <Route path="/pendencias" element={<PendenciesPage />} />
           <Route
             path="/backup"
             element={

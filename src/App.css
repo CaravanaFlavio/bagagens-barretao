@@ -2066,8 +2066,27 @@ svg {
   padding: 13px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  color: inherit;
   background: #fff;
   box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.operation-summary-card:hover {
+  transform: translateY(-1px);
+}
+
+.operation-summary-card.is-active {
+  border-color: var(--blue-600);
+  box-shadow: 0 0 0 3px rgba(23, 105, 170, 0.12), var(--shadow-sm);
+}
+
+.operation-summary-card:focus-visible {
+  outline: 3px solid rgba(23, 105, 170, 0.28);
+  outline-offset: 2px;
 }
 
 .operation-summary-card > div {
@@ -2308,7 +2327,7 @@ svg {
 
 .operation-view-switch {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 5px;
   padding: 5px;
   border-radius: 12px;
@@ -2639,6 +2658,10 @@ svg {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
   }
+
+  .operation-view-switch {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (min-width: 720px) {
@@ -2849,7 +2872,7 @@ svg {
 
 .passenger-operation-progress {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -2886,6 +2909,12 @@ svg {
   border-color: #ecc98f;
   color: var(--amber-700);
   background: var(--amber-100);
+}
+
+.passenger-operation-progress .has-unexpected {
+  border-color: #f0b7bb;
+  color: var(--red-700);
+  background: var(--red-100);
 }
 
 .passenger-operation-luggage-panel {
@@ -2926,6 +2955,10 @@ svg {
 }
 
 @media (min-width: 700px) {
+  .passenger-operation-progress {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .passenger-operation-footer {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -2947,5 +2980,800 @@ svg {
 
   .passenger-history-button {
     width: 100%;
+  }
+}
+
+/* Fase 5: Central de Pendências e Relatórios */
+.pendencies-page {
+  display: grid;
+  gap: 22px;
+}
+
+.report-title-card {
+  align-items: flex-end;
+}
+
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.report-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.report-summary-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 2px 11px;
+  align-items: center;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.report-summary-card > div {
+  display: grid;
+  grid-row: 1 / 3;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--blue-600);
+  background: var(--blue-100);
+}
+
+.report-summary-card > div svg {
+  width: 21px;
+  height: 21px;
+}
+
+.report-summary-card span {
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+}
+
+.report-summary-card strong {
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.report-summary-card.tone-amber > div {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.report-summary-card.tone-red > div {
+  color: var(--red-700);
+  background: var(--red-100);
+}
+
+.report-location-card,
+.report-filter-card,
+.report-tab-panel {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.report-location-card .section-heading time {
+  color: var(--ink-500);
+  font-size: 0.65rem;
+  font-weight: 750;
+}
+
+.report-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.report-stage-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  color: var(--ink-700);
+  background: #eef3f7;
+}
+
+.report-stage-item span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-stage-item strong {
+  font-size: 1.05rem;
+}
+
+.report-stage-item.stage-warehouse_initial {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.report-stage-item.stage-trailer_outbound {
+  color: var(--blue-600);
+  background: var(--blue-100);
+}
+
+.report-stage-item.stage-with_passenger {
+  color: var(--green-700);
+  background: var(--green-100);
+}
+
+.report-stage-item.stage-trailer_return {
+  color: var(--red-700);
+  background: var(--red-100);
+}
+
+.report-stage-item.stage-warehouse_return {
+  color: var(--navy-700);
+  background: #e5edf3;
+}
+
+.report-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 6px;
+  border-radius: 14px;
+  background: #e7edf2;
+}
+
+.report-tabs button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--ink-700);
+  background: transparent;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.report-tabs button span {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--navy-700);
+  font-size: 0.61rem;
+}
+
+.report-tabs button.is-active {
+  color: var(--navy-900);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.report-filter-card {
+  display: grid;
+  gap: 10px;
+}
+
+.report-tab-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.report-empty-state {
+  min-height: 190px;
+  box-shadow: none;
+}
+
+.pendency-list,
+.report-luggage-list,
+.closure-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pendency-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+
+.pendency-card.tone-amber {
+  border-color: #ecc98f;
+  background: #fffaf1;
+}
+
+.pendency-card.tone-red {
+  border-color: #f0b7bb;
+  background: #fff7f7;
+}
+
+.pendency-card__icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.pendency-card.tone-red .pendency-card__icon {
+  color: var(--red-700);
+  background: var(--red-100);
+}
+
+.pendency-card__icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.pendency-card__content {
+  min-width: 0;
+}
+
+.pendency-card__kind {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink-500);
+  font-size: 0.63rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pendency-card h3,
+.pendency-card p,
+.pendency-card blockquote {
+  margin: 0;
+}
+
+.pendency-card h3 {
+  font-size: 0.9rem;
+}
+
+.pendency-card p {
+  margin-top: 4px;
+  color: var(--ink-700);
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.pendency-card blockquote {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-left: 3px solid currentColor;
+  border-radius: 0 8px 8px 0;
+  color: var(--ink-700);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.pendency-card time {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink-500);
+  font-size: 0.62rem;
+  font-weight: 750;
+}
+
+.pendency-card .badge-row {
+  margin-top: 9px;
+}
+
+.report-luggage-card {
+  display: grid;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.report-luggage-card__code {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.report-luggage-card__code > svg {
+  width: 22px;
+  height: 22px;
+  color: var(--blue-600);
+}
+
+.report-luggage-card__code strong,
+.report-luggage-card__code span,
+.report-luggage-card__owner strong,
+.report-luggage-card__owner span {
+  display: block;
+}
+
+.report-luggage-card__code strong {
+  font-size: 0.93rem;
+}
+
+.report-luggage-card__code span,
+.report-luggage-card__owner span {
+  margin-top: 2px;
+  color: var(--ink-500);
+  font-size: 0.66rem;
+}
+
+.report-luggage-card__owner {
+  padding: 10px;
+  border-radius: 10px;
+  background: #f5f7f9;
+}
+
+.report-luggage-card__owner strong {
+  font-size: 0.78rem;
+}
+
+.report-luggage-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #edf1f4;
+}
+
+.report-luggage-card__footer small {
+  color: var(--ink-500);
+  font-size: 0.62rem;
+}
+
+.closure-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+
+.closure-card.has-issues {
+  border-color: #ecc98f;
+  background: #fffaf1;
+}
+
+.closure-card.is-clear {
+  border-color: #c5e3d5;
+  background: #f4fbf8;
+}
+
+.closure-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.closure-card__header > svg {
+  width: 22px;
+  height: 22px;
+}
+
+.closure-card.has-issues .closure-card__header > svg {
+  color: var(--amber-700);
+}
+
+.closure-card.is-clear .closure-card__header > svg {
+  color: var(--green-700);
+}
+
+.closure-card__header strong,
+.closure-card__header time {
+  display: block;
+}
+
+.closure-card__header strong {
+  font-size: 0.86rem;
+}
+
+.closure-card__header time {
+  margin-top: 2px;
+  color: var(--ink-500);
+  font-size: 0.63rem;
+}
+
+.closure-card__numbers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.closure-card__numbers span {
+  padding: 8px;
+  border-radius: 9px;
+  color: var(--ink-700);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.64rem;
+}
+
+.closure-card__numbers strong {
+  font-size: 0.78rem;
+}
+
+.closure-card > p {
+  margin: 0;
+  color: var(--ink-700);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.totals-panel {
+  gap: 24px;
+}
+
+.period-total-grid {
+  display: grid;
+  gap: 9px;
+}
+
+.period-total-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #f8fafb;
+}
+
+.period-total-card > strong {
+  font-size: 0.85rem;
+}
+
+.period-total-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-700);
+  font-size: 0.7rem;
+}
+
+.period-total-card > div b {
+  color: var(--navy-900);
+  font-size: 1rem;
+}
+
+.period-total-card small {
+  color: var(--ink-500);
+  font-size: 0.63rem;
+}
+
+.city-report-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.city-report-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.city-report-table--stages {
+  min-width: 920px;
+}
+
+.movement-report-table {
+  min-width: 1080px;
+}
+
+.print-report {
+  display: none;
+}
+
+.city-report-table th,
+.city-report-table td {
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 0.69rem;
+}
+
+.city-report-table th {
+  color: var(--ink-500);
+  background: #f5f7f9;
+  font-weight: 850;
+}
+
+.city-report-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.history-exception-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 9px;
+  padding: 9px;
+  border-radius: 9px;
+  color: var(--red-700);
+  background: var(--red-100);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.history-exception-note svg {
+  width: 17px;
+  height: 17px;
+}
+
+@media (min-width: 640px) {
+  .report-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .report-stage-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .report-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .report-filter-card {
+    grid-template-columns: 1.4fr 1fr 1fr;
+  }
+
+  .pendency-list,
+  .report-luggage-list,
+  .closure-list,
+  .period-total-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 980px) {
+  .pendency-list,
+  .report-luggage-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .period-total-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .report-title-card {
+    align-items: stretch;
+  }
+
+  .report-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .report-luggage-card__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-luggage-card__footer .mini-action-button {
+    width: 100%;
+  }
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  body {
+    color: #111 !important;
+    font-family: Arial, Helvetica, sans-serif;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .app-header,
+  .bottom-navigation,
+  .pendencies-page > :not(.print-report) {
+    display: none !important;
+  }
+
+  .app-shell,
+  .app-main {
+    width: 100%;
+    min-height: auto;
+    margin: 0;
+    padding: 0;
+  }
+
+  .print-report {
+    display: block !important;
+    color: #111;
+    font-size: 9pt;
+  }
+
+  .print-report__header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 14mm;
+    margin-bottom: 6mm;
+    padding-bottom: 4mm;
+    border-bottom: 2px solid #153550;
+  }
+
+  .print-report__header p,
+  .print-report__header h1,
+  .print-report__meta span,
+  .print-report__meta strong {
+    margin: 0;
+  }
+
+  .print-report__header p {
+    margin-bottom: 1.5mm;
+    color: #425466;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .print-report__header h1 {
+    color: #0d2236;
+    font-size: 20pt;
+    line-height: 1.05;
+  }
+
+  .print-report__meta {
+    display: grid;
+    gap: 1mm;
+    min-width: 58mm;
+    text-align: right;
+  }
+
+  .print-report__meta strong {
+    color: #425466;
+    font-size: 7.5pt;
+    text-transform: uppercase;
+  }
+
+  .print-report__meta span {
+    font-size: 8.5pt;
+  }
+
+  .print-report__section {
+    margin-bottom: 6mm;
+  }
+
+  .print-report__section h2 {
+    margin: 0 0 2.5mm;
+    color: #153550;
+    font-size: 12pt;
+  }
+
+  .print-page-break-before {
+    break-before: page;
+    page-break-before: always;
+  }
+
+  .print-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 3mm;
+  }
+
+  .print-summary-grid > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 3mm;
+    padding: 3mm;
+    border: 1px solid #cbd5df;
+    border-radius: 2mm;
+    background: #f5f7f9;
+  }
+
+  .print-summary-grid span {
+    color: #425466;
+    font-size: 8pt;
+    font-weight: 700;
+  }
+
+  .print-summary-grid strong {
+    color: #0d2236;
+    font-size: 15pt;
+  }
+
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+  }
+
+  .print-table thead {
+    display: table-header-group;
+  }
+
+  .print-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .print-table th,
+  .print-table td {
+    padding: 2mm 2.2mm;
+    border: 1px solid #cbd5df;
+    vertical-align: top;
+    text-align: left;
+    font-size: 8pt;
+    line-height: 1.25;
+  }
+
+  .print-table th {
+    color: #0d2236;
+    background: #e8eef3;
+    font-weight: 700;
+  }
+
+  .print-table tbody tr:nth-child(even) td {
+    background: #f8fafb;
+  }
+
+  .print-table--timeline th,
+  .print-table--timeline td {
+    padding: 1.6mm 1.8mm;
+    font-size: 7.2pt;
+  }
+
+  .print-table--timeline th:nth-child(1),
+  .print-table--timeline td:nth-child(1) {
+    width: 27mm;
+    white-space: nowrap;
+  }
+
+  .print-table--timeline th:nth-child(4),
+  .print-table--timeline td:nth-child(4) {
+    width: 16mm;
+    white-space: nowrap;
+  }
+
+  .print-empty-message {
+    margin: 0;
+    padding: 4mm;
+    border: 1px solid #cbd5df;
+    background: #f8fafb;
+    color: #425466;
   }
 }

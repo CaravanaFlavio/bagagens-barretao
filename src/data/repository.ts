@@ -1,6 +1,8 @@
 import { OPERATION_DEFINITIONS, STAGE_LABELS } from '../constants/operations'
 import { getDatabase } from './appDatabase'
 import type {
+  CentralPendency,
+  CityReportSummary,
   DashboardSummary,
   Luggage,
   LuggageInput,
@@ -16,6 +18,8 @@ import type {
   OperationPassengerGroup,
   OperationScanCheck,
   OperationSnapshot,
+  PendenciesReport,
+  PeriodReportSummary,
 } from '../domain/types'
 
 function now() {
@@ -326,16 +330,209 @@ export async function deletePhoto(photoId: string) {
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
+  const report = await getPendenciesReport()
+  return {
+    passengerCount: report.passengerCount,
+    luggageCount: report.luggageCount,
+    pendingCount: report.activePendencyCount,
+  }
+}
+
+
+function emptyStageCounts(): Record<Luggage['currentStage'], number> {
+  return {
+    WAREHOUSE_INITIAL: 0,
+    TRAILER_OUTBOUND: 0,
+    WITH_PASSENGER: 0,
+    TRAILER_RETURN: 0,
+    WAREHOUSE_RETURN: 0,
+  }
+}
+
+function closureHasDivergence(closure: OperationClosure) {
+  return (
+    closure.remainingLuggageIds.length > 0 ||
+    closure.unexpectedLuggageIds.length > 0 ||
+    closure.passengerIdsWithoutLuggage.length > 0
+  )
+}
+
+export async function getPendenciesReport(): Promise<PendenciesReport> {
   const database = await getDatabase()
-  const [passengerCount, luggageCount] = await Promise.all([
-    database.count('passengers'),
-    database.count('luggage'),
+  const [passengers, allLuggage, movements, closures] = await Promise.all([
+    database.getAll('passengers'),
+    database.getAll('luggage'),
+    database.getAll('movements'),
+    database.getAll('operationClosures'),
   ])
 
+  const passengerMap = new Map(passengers.map((passenger) => [passenger.id, passenger]))
+  const luggageMap = new Map(allLuggage.map((item) => [item.id, item]))
+  const luggageCountByPassenger = new Map<string, number>()
+  const stageCounts = emptyStageCounts()
+
+  for (const item of allLuggage) {
+    luggageCountByPassenger.set(
+      item.passengerId,
+      (luggageCountByPassenger.get(item.passengerId) ?? 0) + 1,
+    )
+    stageCounts[item.currentStage] += 1
+  }
+
+  const latestMovementByLuggage = new Map<string, LuggageMovement>()
+  for (const movement of movements) {
+    const current = latestMovementByLuggage.get(movement.luggageId)
+    if (!current || movement.occurredAt > current.occurredAt) {
+      latestMovementByLuggage.set(movement.luggageId, movement)
+    }
+  }
+
+  const luggage: PendenciesReport['luggage'] = []
+  for (const item of allLuggage) {
+    const passenger = passengerMap.get(item.passengerId)
+    if (!passenger) continue
+    luggage.push({
+      ...item,
+      passenger,
+      latestMovement: latestMovementByLuggage.get(item.id),
+    })
+  }
+  luggage.sort((a, b) => {
+    const passengerOrder = a.passenger.fullName.localeCompare(
+      b.passenger.fullName,
+      'pt-BR',
+    )
+    return passengerOrder || a.code.localeCompare(b.code, 'pt-BR', { numeric: true })
+  })
+
+  const movementTimeline: PendenciesReport['movementTimeline'] = movements
+    .map((movement) => {
+      const movementLuggage = luggageMap.get(movement.luggageId)
+      if (!movementLuggage) return null
+      const passenger = passengerMap.get(movementLuggage.passengerId)
+      if (!passenger) return null
+      return {
+        movement,
+        luggage: movementLuggage,
+        passenger,
+      }
+    })
+    .filter(
+      (item): item is PendenciesReport['movementTimeline'][number] => Boolean(item),
+    )
+    .sort((a, b) => a.movement.occurredAt.localeCompare(b.movement.occurredAt))
+
+  const passengersWithoutLuggage = passengers.filter(
+    (passenger) => !(luggageCountByPassenger.get(passenger.id) ?? 0),
+  )
+  const exceptionMovements = movements.filter((movement) => movement.isException)
+
+  const latestClosureByOperation = new Map<OperationKey, OperationClosure>()
+  for (const closure of [...closures].sort((a, b) =>
+    b.finalizedAt.localeCompare(a.finalizedAt),
+  )) {
+    if (!latestClosureByOperation.has(closure.operationKey)) {
+      latestClosureByOperation.set(closure.operationKey, closure)
+    }
+  }
+  const divergentLatestClosures = Array.from(latestClosureByOperation.values()).filter(
+    closureHasDivergence,
+  )
+
+  const pendencies: CentralPendency[] = [
+    ...passengersWithoutLuggage.map((passenger) => ({
+      id: `passenger_without_luggage_${passenger.id}`,
+      kind: 'PASSENGER_WITHOUT_LUGGAGE' as const,
+      occurredAt: passenger.updatedAt,
+      passenger,
+    })),
+    ...exceptionMovements.map((movement) => ({
+      id: `movement_exception_${movement.id}`,
+      kind: 'MOVEMENT_EXCEPTION' as const,
+      occurredAt: movement.occurredAt,
+      movement,
+      luggage: luggageMap.get(movement.luggageId),
+      passenger: luggageMap.get(movement.luggageId)
+        ? passengerMap.get(luggageMap.get(movement.luggageId)!.passengerId)
+        : undefined,
+    })),
+    ...divergentLatestClosures.map((closure) => ({
+      id: `closure_divergence_${closure.id}`,
+      kind: 'CLOSURE_DIVERGENCE' as const,
+      occurredAt: closure.finalizedAt,
+      closure,
+    })),
+  ].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+
+  const cityMap = new Map<string, CityReportSummary>()
+  for (const passenger of passengers) {
+    const current = cityMap.get(passenger.city) ?? {
+      city: passenger.city,
+      passengerCount: 0,
+      luggageCount: 0,
+      stageCounts: emptyStageCounts(),
+    }
+    current.passengerCount += 1
+    cityMap.set(passenger.city, current)
+  }
+  for (const item of allLuggage) {
+    const passenger = passengerMap.get(item.passengerId)
+    if (!passenger) continue
+    const current = cityMap.get(passenger.city)
+    if (!current) continue
+    current.luggageCount += 1
+    current.stageCounts[item.currentStage] += 1
+  }
+
+  const periodOrder: Passenger['travelPeriod'][] = [
+    'FIRST_WEEK',
+    'SECOND_WEEK',
+    'BOTH_WEEKS',
+  ]
+  const periodMap = new Map<Passenger['travelPeriod'], PeriodReportSummary>(
+    periodOrder.map((travelPeriod) => [
+      travelPeriod,
+      {
+        travelPeriod,
+        passengerCount: 0,
+        luggageCount: 0,
+        stageCounts: emptyStageCounts(),
+      },
+    ]),
+  )
+  for (const passenger of passengers) {
+    periodMap.get(passenger.travelPeriod)!.passengerCount += 1
+  }
+  for (const item of allLuggage) {
+    const passenger = passengerMap.get(item.passengerId)
+    if (!passenger) continue
+    const current = periodMap.get(passenger.travelPeriod)!
+    current.luggageCount += 1
+    current.stageCounts[item.currentStage] += 1
+  }
+
   return {
-    passengerCount,
-    luggageCount,
-    pendingCount: 0,
+    generatedAt: now(),
+    passengerCount: passengers.length,
+    luggageCount: allLuggage.length,
+    passengerWithoutLuggageCount: passengersWithoutLuggage.length,
+    exceptionCount: exceptionMovements.length,
+    divergentClosureCount: divergentLatestClosures.length,
+    activePendencyCount:
+      passengersWithoutLuggage.length +
+      exceptionMovements.length +
+      divergentLatestClosures.length,
+    stageCounts,
+    pendencies,
+    luggage,
+    movementTimeline,
+    closures: [...closures].sort((a, b) =>
+      b.finalizedAt.localeCompare(a.finalizedAt),
+    ),
+    citySummaries: Array.from(cityMap.values()).sort((a, b) =>
+      a.city.localeCompare(b.city, 'pt-BR'),
+    ),
+    periodSummaries: periodOrder.map((period) => periodMap.get(period)!),
   }
 }
 
@@ -381,14 +578,55 @@ function operationMismatchMessage(
   return 'A bagagem não pertence ao período esperado para esta operação.'
 }
 
+function movementMatchesOperation(
+  movement: LuggageMovement,
+  operationKey: OperationKey,
+  passenger: Passenger,
+) {
+  if (movement.operationKey) {
+    return movement.operationKey === operationKey
+  }
+
+  if (
+    operationKey === 'WAREHOUSE_TO_TRAILER' &&
+    movement.type === 'WAREHOUSE_TO_TRAILER'
+  ) {
+    return true
+  }
+
+  if (
+    operationKey === 'TRAILER_TO_WAREHOUSE' &&
+    movement.type === 'TRAILER_TO_WAREHOUSE'
+  ) {
+    return true
+  }
+
+  if (movement.type === 'TRAILER_TO_PASSENGER') {
+    if (passenger.travelPeriod === 'SECOND_WEEK') {
+      return operationKey === 'DELIVER_SECOND_WEEK'
+    }
+    return operationKey === 'DELIVER_FIRST_WEEK'
+  }
+
+  if (movement.type === 'PASSENGER_TO_TRAILER') {
+    if (passenger.travelPeriod === 'FIRST_WEEK') {
+      return operationKey === 'COLLECT_FIRST_WEEK'
+    }
+    return operationKey === 'COLLECT_SECOND_WEEK'
+  }
+
+  return false
+}
+
 export async function getOperationSnapshot(
   operationKey: OperationKey,
 ): Promise<OperationSnapshot> {
   const database = await getDatabase()
   const definition = OPERATION_DEFINITIONS[operationKey]
-  const [passengers, allLuggage, closures] = await Promise.all([
+  const [passengers, allLuggage, allMovements, closures] = await Promise.all([
     database.getAll('passengers'),
     database.getAll('luggage'),
+    database.getAll('movements'),
     database.getAllFromIndex('operationClosures', 'by-operation', operationKey),
   ])
 
@@ -396,21 +634,35 @@ export async function getOperationSnapshot(
     .filter((passenger) => isPassengerEligibleForOperation(operationKey, passenger))
     .sort((a, b) => a.fullName.localeCompare(b.fullName, 'pt-BR'))
 
-  const passengerMap = new Map(eligiblePassengers.map((passenger) => [passenger.id, passenger]))
+  const passengerMap = new Map(
+    eligiblePassengers.map((passenger) => [passenger.id, passenger]),
+  )
+  const movementsByLuggage = new Map<string, LuggageMovement[]>()
+
+  for (const movement of allMovements) {
+    const current = movementsByLuggage.get(movement.luggageId) ?? []
+    current.push(movement)
+    movementsByLuggage.set(movement.luggageId, current)
+  }
+
   const groupedLuggage = new Map<string, OperationLuggageItem[]>()
 
   for (const item of allLuggage) {
     const passenger = passengerMap.get(item.passengerId)
     if (!passenger) continue
 
+    const completed = (movementsByLuggage.get(item.id) ?? []).some((movement) =>
+      movementMatchesOperation(movement, operationKey, passenger),
+    )
+    const pending = !completed && item.currentStage === definition.fromStage
+    const unexpected = !completed && !pending
+
     const enriched: OperationLuggageItem = {
       ...item,
       passenger,
-      isPending: item.currentStage === definition.fromStage,
-      isCompleted: item.currentStage === definition.toStage,
-      isUnexpected:
-        item.currentStage !== definition.fromStage &&
-        item.currentStage !== definition.toStage,
+      isPending: pending,
+      isCompleted: completed,
+      isUnexpected: unexpected,
     }
 
     const current = groupedLuggage.get(passenger.id) ?? []
@@ -445,7 +697,9 @@ export async function getOperationSnapshot(
     completedLuggage: items.filter((item) => item.isCompleted).length,
     unexpectedLuggage: items.filter((item) => item.isUnexpected).length,
     passengersWithoutLuggage: definition.emptyPassengerWarning
-      ? eligiblePassengers.filter((passenger) => !(groupedLuggage.get(passenger.id)?.length))
+      ? eligiblePassengers.filter(
+          (passenger) => !(groupedLuggage.get(passenger.id)?.length),
+        )
       : [],
     latestClosure,
   }
@@ -480,6 +734,24 @@ export async function checkLuggageForOperation(
       status: 'BLOCKED',
       message: 'O dono desta bagagem não foi encontrado. A movimentação foi bloqueada.',
       luggage,
+    }
+  }
+
+  const luggageMovements = await database.getAllFromIndex(
+    'movements',
+    'by-luggage',
+    luggage.id,
+  )
+  if (
+    luggageMovements.some((movement) =>
+      movementMatchesOperation(movement, operationKey, passenger),
+    )
+  ) {
+    return {
+      status: 'ALREADY_COMPLETED',
+      message: `A bagagem ${luggage.code} já foi registrada nesta etapa.`,
+      luggage,
+      passenger,
     }
   }
 
@@ -558,6 +830,15 @@ export async function moveLuggageForOperation(
   const passenger = await passengerStore.get(luggage.passengerId)
   if (!passenger) {
     throw new Error('O dono desta bagagem não foi encontrado.')
+  }
+
+  const luggageMovements = await movementStore.index('by-luggage').getAll(luggage.id)
+  if (
+    luggageMovements.some((movement) =>
+      movementMatchesOperation(movement, operationKey, passenger),
+    )
+  ) {
+    throw new Error(`A bagagem ${luggage.code} já foi registrada nesta etapa.`)
   }
 
   if (stageOrder(luggage.currentStage) > stageOrder(definition.toStage)) {

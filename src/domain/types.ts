@@ -24,7 +24,7 @@ export type OperationKey =
 
 export type CodeSource = 'MANUAL' | 'SCANNER'
 export type PhotoKind = 'PASSENGER_SET' | 'LUGGAGE_DETAIL' | 'OPERATION_EVIDENCE'
-export type OperationViewFilter = 'PENDING' | 'COMPLETED' | 'ALL'
+export type OperationViewFilter = 'PENDING' | 'COMPLETED' | 'UNEXPECTED' | 'ALL'
 
 export interface Passenger {
   id: string
@@ -167,4 +167,61 @@ export interface OperationScanCheck {
   message: string
   luggage?: Luggage
   passenger?: Passenger
+}
+
+export type CentralPendencyKind =
+  | 'PASSENGER_WITHOUT_LUGGAGE'
+  | 'MOVEMENT_EXCEPTION'
+  | 'CLOSURE_DIVERGENCE'
+
+export interface CentralPendency {
+  id: string
+  kind: CentralPendencyKind
+  occurredAt: string
+  passenger?: Passenger
+  luggage?: Luggage
+  movement?: LuggageMovement
+  closure?: OperationClosure
+}
+
+export interface LuggageReportItem extends Luggage {
+  passenger: Passenger
+  latestMovement?: LuggageMovement
+}
+
+export interface MovementReportItem {
+  movement: LuggageMovement
+  luggage: Luggage
+  passenger: Passenger
+}
+
+export interface CityReportSummary {
+  city: string
+  passengerCount: number
+  luggageCount: number
+  stageCounts: Record<LuggageStage, number>
+}
+
+export interface PeriodReportSummary {
+  travelPeriod: TravelPeriod
+  passengerCount: number
+  luggageCount: number
+  stageCounts: Record<LuggageStage, number>
+}
+
+export interface PendenciesReport {
+  generatedAt: string
+  passengerCount: number
+  luggageCount: number
+  passengerWithoutLuggageCount: number
+  exceptionCount: number
+  divergentClosureCount: number
+  activePendencyCount: number
+  stageCounts: Record<LuggageStage, number>
+  pendencies: CentralPendency[]
+  luggage: LuggageReportItem[]
+  movementTimeline: MovementReportItem[]
+  closures: OperationClosure[]
+  citySummaries: CityReportSummary[]
+  periodSummaries: PeriodReportSummary[]
 }

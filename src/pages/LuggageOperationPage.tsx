@@ -19,7 +19,7 @@ import {
   UserRoundCheck,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { BarcodeScannerModal } from '../components/BarcodeScannerModal'
 import { Modal } from '../components/Modal'
 import { PhotoCaptureButtons } from '../components/PhotoCaptureButtons'
@@ -86,6 +86,7 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
   const [query, setQuery] = useState('')
   const [cityFilter, setCityFilter] = useState('')
   const [viewFilter, setViewFilter] = useState<OperationViewFilter>('PENDING')
+  const passengerListRef = useRef<HTMLElement>(null)
 
   const [selectedPassengerId, setSelectedPassengerId] = useState<string | null>(null)
   const [loadingPassengerPhoto, setLoadingPassengerPhoto] = useState(false)
@@ -161,7 +162,11 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
       const matchesView =
         viewFilter === 'ALL' ||
         (viewFilter === 'PENDING' && (group.pendingCount > 0 || group.totalCount === 0)) ||
-        (viewFilter === 'COMPLETED' && group.totalCount > 0 && group.pendingCount === 0)
+        (viewFilter === 'COMPLETED' &&
+          group.totalCount > 0 &&
+          group.pendingCount === 0 &&
+          group.unexpectedCount === 0) ||
+        (viewFilter === 'UNEXPECTED' && group.unexpectedCount > 0)
 
       return matchesCity && matchesQuery && matchesView
     })
@@ -378,6 +383,18 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
     await openPassenger(correctGroup)
   }
 
+  const applySummaryFilter = (filter: OperationViewFilter) => {
+    setQuery('')
+    setCityFilter('')
+    setViewFilter(filter)
+    window.requestAnimationFrame(() => {
+      passengerListRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+    })
+  }
+
   const handleFinalize = async () => {
     if (!snapshot) return
     const hasIssues =
@@ -450,11 +467,38 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
         </section>
       ) : null}
 
-      <section className="operation-summary-grid">
-        <OperationSummaryCard label="Esperadas" value={snapshot.totalLuggage} icon={<BriefcaseBusiness />} />
-        <OperationSummaryCard label="Conferidas" value={snapshot.completedLuggage} icon={<CheckCircle2 />} tone="green" />
-        <OperationSummaryCard label="Restantes" value={snapshot.pendingLuggage} icon={<Clock3 />} tone="amber" />
-        <OperationSummaryCard label="Fora do fluxo" value={snapshot.unexpectedLuggage} icon={<AlertTriangle />} tone="red" />
+      <section className="operation-summary-grid" aria-label="Atalhos da conferência">
+        <OperationSummaryCard
+          label="Esperadas"
+          value={snapshot.totalLuggage}
+          icon={<BriefcaseBusiness />}
+          active={viewFilter === 'ALL'}
+          onClick={() => applySummaryFilter('ALL')}
+        />
+        <OperationSummaryCard
+          label="Conferidas"
+          value={snapshot.completedLuggage}
+          icon={<CheckCircle2 />}
+          tone="green"
+          active={viewFilter === 'COMPLETED'}
+          onClick={() => applySummaryFilter('COMPLETED')}
+        />
+        <OperationSummaryCard
+          label="Restantes"
+          value={snapshot.pendingLuggage}
+          icon={<Clock3 />}
+          tone="amber"
+          active={viewFilter === 'PENDING'}
+          onClick={() => applySummaryFilter('PENDING')}
+        />
+        <OperationSummaryCard
+          label="Fora do fluxo"
+          value={snapshot.unexpectedLuggage}
+          icon={<AlertTriangle />}
+          tone="red"
+          active={viewFilter === 'UNEXPECTED'}
+          onClick={() => applySummaryFilter('UNEXPECTED')}
+        />
       </section>
 
       <section className="operation-passenger-guidance">
@@ -465,7 +509,7 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
         </div>
       </section>
 
-      <section>
+      <section ref={passengerListRef}>
         <div className="section-heading">
           <div>
             <p className="eyebrow">Lista da etapa</p>
@@ -491,6 +535,7 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
           <div className="operation-view-switch" role="group" aria-label="Filtrar situação">
             <button type="button" className={viewFilter === 'PENDING' ? 'is-active' : undefined} onClick={() => setViewFilter('PENDING')}>Pendentes</button>
             <button type="button" className={viewFilter === 'COMPLETED' ? 'is-active' : undefined} onClick={() => setViewFilter('COMPLETED')}>Conferidos</button>
+            <button type="button" className={viewFilter === 'UNEXPECTED' ? 'is-active' : undefined} onClick={() => setViewFilter('UNEXPECTED')}>Fora do fluxo</button>
             <button type="button" className={viewFilter === 'ALL' ? 'is-active' : undefined} onClick={() => setViewFilter('ALL')}>Todos</button>
           </div>
         </div>
@@ -549,6 +594,10 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
               <div className={selectedGroup.pendingCount > 0 ? 'has-pending' : 'is-completed'}>
                 <span>Restantes</span>
                 <strong>{selectedGroup.pendingCount}</strong>
+              </div>
+              <div className={selectedGroup.unexpectedCount > 0 ? 'has-unexpected' : 'is-completed'}>
+                <span>Fora do fluxo</span>
+                <strong>{selectedGroup.unexpectedCount}</strong>
               </div>
             </section>
 
@@ -664,14 +713,16 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
             </section>
 
             <div className="passenger-operation-footer">
-              <div className={selectedGroup.totalCount > 0 && selectedGroup.pendingCount === 0 ? 'passenger-complete-message is-complete' : 'passenger-complete-message'}>
-                {selectedGroup.totalCount > 0 && selectedGroup.pendingCount === 0 ? <CheckCircle2 /> : <Clock3 />}
+              <div className={selectedGroup.totalCount > 0 && selectedGroup.pendingCount === 0 && selectedGroup.unexpectedCount === 0 ? 'passenger-complete-message is-complete' : 'passenger-complete-message'}>
+                {selectedGroup.totalCount > 0 && selectedGroup.pendingCount === 0 && selectedGroup.unexpectedCount === 0 ? <CheckCircle2 /> : <Clock3 />}
                 <span>
                   {selectedGroup.totalCount === 0
                     ? 'Este passageiro não possui bagagens cadastradas.'
-                    : selectedGroup.pendingCount === 0
-                      ? 'Todas as bagagens deste passageiro foram conferidas.'
-                      : `Ainda faltam ${selectedGroup.pendingCount} ${selectedGroup.pendingCount === 1 ? 'bagagem' : 'bagagens'}.`}
+                    : selectedGroup.unexpectedCount > 0
+                      ? `${selectedGroup.unexpectedCount} ${selectedGroup.unexpectedCount === 1 ? 'bagagem está' : 'bagagens estão'} fora do fluxo desta etapa.`
+                      : selectedGroup.pendingCount === 0
+                        ? 'Todas as bagagens deste passageiro foram conferidas.'
+                        : `Ainda faltam ${selectedGroup.pendingCount} ${selectedGroup.pendingCount === 1 ? 'bagagem' : 'bagagens'}.`}
                 </span>
               </div>
               <button type="button" className="primary-button" onClick={closePassenger}>Fechar passageiro</button>
@@ -812,19 +863,39 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
   )
 }
 
-function OperationSummaryCard({ label, value, icon, tone = 'blue' }: { label: string; value: number; icon: ReactNode; tone?: 'blue' | 'green' | 'amber' | 'red' }) {
+function OperationSummaryCard({
+  label,
+  value,
+  icon,
+  tone = 'blue',
+  active,
+  onClick,
+}: {
+  label: string
+  value: number
+  icon: ReactNode
+  tone?: 'blue' | 'green' | 'amber' | 'red'
+  active: boolean
+  onClick: () => void
+}) {
   return (
-    <article className={`operation-summary-card tone-${tone}`}>
+    <button
+      type="button"
+      className={`operation-summary-card tone-${tone} ${active ? 'is-active' : ''}`}
+      onClick={onClick}
+      aria-pressed={active}
+      title={`Mostrar ${label.toLocaleLowerCase('pt-BR')}`}
+    >
       <div>{icon}</div>
       <span>{label}</span>
       <strong>{value}</strong>
-    </article>
+    </button>
   )
 }
 
 function OperationPassengerCard({ group, onOpen }: { group: OperationPassengerGroup; onOpen: () => void }) {
   const periodClass = `period-${group.passenger.travelPeriod.toLowerCase()}`
-  const isComplete = group.totalCount > 0 && group.pendingCount === 0
+  const isComplete = group.totalCount > 0 && group.pendingCount === 0 && group.unexpectedCount === 0
 
   return (
     <article className={`operation-passenger-card operation-passenger-card--selectable ${isComplete ? 'is-complete' : ''}`}>
@@ -858,7 +929,11 @@ function OperationPassengerCard({ group, onOpen }: { group: OperationPassengerGr
         )}
         <button type="button" className="primary-button operation-open-passenger-button" onClick={onOpen} disabled={group.totalCount === 0}>
           <Camera aria-hidden="true" />
-          {isComplete ? 'Revisar passageiro' : 'Conferir este passageiro'}
+          {group.unexpectedCount > 0
+            ? 'Revisar divergência'
+            : isComplete
+              ? 'Revisar passageiro'
+              : 'Conferir este passageiro'}
         </button>
       </div>
     </article>
