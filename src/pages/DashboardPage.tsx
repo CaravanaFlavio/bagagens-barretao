@@ -7,6 +7,7 @@ import {
   CloudOff,
   Database,
   FileClock,
+  FileSpreadsheet,
   MapPinned,
   PackageCheck,
   PackageOpen,
@@ -138,6 +139,7 @@ export function DashboardPage({ isOnline }: DashboardPageProps) {
         <div className="quick-grid">
           <QuickCard title="Passageiros" description="Cadastrar e incluir bagagens" path="/passageiros" icon={<UsersRound />} badge={summary.passengerCount} />
           <QuickCard title="Pendências" description="Itens para revisar" path="/pendencias" icon={<AlertTriangle />} badge={summary.pendingCount} />
+          <QuickCard title="Contingência" description="Planilha para controle manual" path="/contingencia" icon={<FileSpreadsheet />} />
           <QuickCard title="Backup" description="Cópias e restauração" path="/backup" icon={<Cloud />} />
           <QuickCard title="Configurações" description="Cidades e setores" path="/configuracoes" icon={<Settings />} />
         </div>

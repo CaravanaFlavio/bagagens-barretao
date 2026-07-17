@@ -14,6 +14,7 @@ import { PendenciesPage } from './pages/PendenciesPage'
 import { BarretosPage } from './pages/BarretosPage'
 import { LuggageOperationPage } from './pages/LuggageOperationPage'
 import { CityDeliveryPage } from './pages/CityDeliveryPage'
+import { ContingencyPage } from './pages/ContingencyPage'
 import './App.css'
 
 function useConnectionStatus() {
@@ -71,6 +72,7 @@ function App() {
           />
           <Route path="/entrega-cidades" element={<CityDeliveryPage />} />
           <Route path="/pendencias" element={<PendenciesPage />} />
+          <Route path="/contingencia" element={<ContingencyPage />} />
           <Route
             path="/backup"
             element={

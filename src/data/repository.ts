@@ -3,6 +3,7 @@ import { OPERATION_DEFINITIONS, STAGE_LABELS } from '../constants/operations'
 import { getDatabase } from './appDatabase'
 import type {
   CentralPendency,
+  ContingencySnapshot,
   CityDeliveryOverview,
   CityReportSummary,
   CityTransfer,
@@ -1431,5 +1432,148 @@ export async function getCityTransferReceipt(
     transfer,
     items: mapItems(transfer.scannedLuggageIds),
     missingItems: mapItems(transfer.missingLuggageIds),
+  }
+}
+
+
+export async function getContingencySnapshot(): Promise<ContingencySnapshot> {
+  const database = await getDatabase()
+  const [passengers, allLuggage, movements, cityTransfers] = await Promise.all([
+    database.getAll('passengers'),
+    database.getAll('luggage'),
+    database.getAll('movements'),
+    database.getAll('cityTransfers'),
+  ])
+
+  const passengerMap = new Map(passengers.map((passenger) => [passenger.id, passenger]))
+  const luggageByPassenger = new Map<string, Luggage[]>()
+  for (const item of allLuggage) {
+    const current = luggageByPassenger.get(item.passengerId) ?? []
+    current.push(item)
+    luggageByPassenger.set(item.passengerId, current)
+  }
+
+  const movementsByLuggage = new Map<string, LuggageMovement[]>()
+  for (const movement of movements) {
+    const current = movementsByLuggage.get(movement.luggageId) ?? []
+    current.push(movement)
+    movementsByLuggage.set(movement.luggageId, current)
+  }
+  for (const itemMovements of movementsByLuggage.values()) {
+    itemMovements.sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
+  }
+
+  const cityTransferMap = new Map(cityTransfers.map((transfer) => [transfer.id, transfer]))
+  const passengersForExport = passengers
+    .map((passenger) => ({
+      passenger,
+      luggageCount: luggageByPassenger.get(passenger.id)?.length ?? 0,
+    }))
+    .sort((a, b) => {
+      const cityOrder = a.passenger.city.localeCompare(b.passenger.city, 'pt-BR')
+      return cityOrder || a.passenger.fullName.localeCompare(b.passenger.fullName, 'pt-BR')
+    })
+
+  const luggageRows: ContingencySnapshot['luggageRows'] = []
+  for (const luggage of allLuggage) {
+    const passenger = passengerMap.get(luggage.passengerId)
+    if (!passenger) continue
+    const luggageMovements = movementsByLuggage.get(luggage.id) ?? []
+    const cityMovement = [...luggageMovements]
+      .reverse()
+      .find((movement) => movement.type === 'WAREHOUSE_TO_CITY')
+    const cityTransfer = cityMovement?.cityTransferId
+      ? cityTransferMap.get(cityMovement.cityTransferId)
+      : undefined
+    luggageRows.push({
+      luggage,
+      passenger,
+      movements: luggageMovements,
+      ...(cityTransfer ? { cityTransfer } : {}),
+    })
+  }
+  luggageRows.sort((a, b) => {
+    const cityOrder = a.passenger.city.localeCompare(b.passenger.city, 'pt-BR')
+    const passengerOrder = a.passenger.fullName.localeCompare(
+      b.passenger.fullName,
+      'pt-BR',
+    )
+    return (
+      cityOrder ||
+      passengerOrder ||
+      a.luggage.code.localeCompare(b.luggage.code, 'pt-BR', { numeric: true })
+    )
+  })
+
+  const cityMap = new Map<string, CityReportSummary>(
+    CITIES.map((city) => [
+      city,
+      {
+        city,
+        passengerCount: 0,
+        luggageCount: 0,
+        stageCounts: emptyStageCounts(),
+      },
+    ]),
+  )
+  for (const passenger of passengers) {
+    const summary = cityMap.get(passenger.city)
+    if (summary) summary.passengerCount += 1
+  }
+  for (const item of allLuggage) {
+    const passenger = passengerMap.get(item.passengerId)
+    const summary = passenger ? cityMap.get(passenger.city) : undefined
+    if (!summary) continue
+    summary.luggageCount += 1
+    summary.stageCounts[item.currentStage] += 1
+  }
+
+  const periodOrder: Passenger['travelPeriod'][] = [
+    'FIRST_WEEK',
+    'SECOND_WEEK',
+    'BOTH_WEEKS',
+  ]
+  const periodMap = new Map<Passenger['travelPeriod'], PeriodReportSummary>(
+    periodOrder.map((travelPeriod) => [
+      travelPeriod,
+      {
+        travelPeriod,
+        passengerCount: 0,
+        luggageCount: 0,
+        stageCounts: emptyStageCounts(),
+      },
+    ]),
+  )
+  for (const passenger of passengers) {
+    periodMap.get(passenger.travelPeriod)!.passengerCount += 1
+  }
+  for (const item of allLuggage) {
+    const passenger = passengerMap.get(item.passengerId)
+    if (!passenger) continue
+    const summary = periodMap.get(passenger.travelPeriod)!
+    summary.luggageCount += 1
+    summary.stageCounts[item.currentStage] += 1
+  }
+
+  const timestamps = [
+    ...passengers.flatMap((passenger) => [passenger.createdAt, passenger.updatedAt]),
+    ...allLuggage.flatMap((item) => [item.createdAt, item.updatedAt]),
+    ...movements.map((movement) => movement.occurredAt),
+    ...cityTransfers.flatMap((transfer) => [
+      transfer.startedAt,
+      transfer.updatedAt,
+      transfer.finalizedAt ?? '',
+    ]),
+  ].filter(Boolean)
+
+  return {
+    generatedAt: now(),
+    latestDataAt: timestamps.sort().at(-1) ?? now(),
+    passengerCount: passengers.length,
+    luggageCount: allLuggage.length,
+    passengers: passengersForExport,
+    luggageRows,
+    citySummaries: CITIES.map((city) => cityMap.get(city)!),
+    periodSummaries: periodOrder.map((period) => periodMap.get(period)!),
   }
 }

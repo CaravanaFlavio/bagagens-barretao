@@ -311,3 +311,26 @@ export interface PendenciesReport {
   citySummaries: CityReportSummary[]
   periodSummaries: PeriodReportSummary[]
 }
+
+export interface ContingencyLuggageRow {
+  luggage: Luggage
+  passenger: Passenger
+  movements: LuggageMovement[]
+  cityTransfer?: CityTransfer
+}
+
+export interface ContingencyPassengerRow {
+  passenger: Passenger
+  luggageCount: number
+}
+
+export interface ContingencySnapshot {
+  generatedAt: string
+  latestDataAt: string
+  passengerCount: number
+  luggageCount: number
+  passengers: ContingencyPassengerRow[]
+  luggageRows: ContingencyLuggageRow[]
+  citySummaries: CityReportSummary[]
+  periodSummaries: PeriodReportSummary[]
+}
