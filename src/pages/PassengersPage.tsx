@@ -128,14 +128,11 @@ export function PassengersPage() {
   const [luggagePhotos, setLuggagePhotos] = useState<Record<string, PhotoRecord>>({})
   const [photoBusyKey, setPhotoBusyKey] = useState<string | null>(null)
   const [photoError, setPhotoError] = useState('')
-  const [setPhotoUrl, setSetPhotoUrl] = useState('')
-  const [luggagePhotoUrls, setLuggagePhotoUrls] = useState<Record<string, string>>({})
   const [photoViewer, setPhotoViewer] = useState<{ title: string; url: string } | null>(null)
 
   const [historyTarget, setHistoryTarget] = useState<Luggage | null>(null)
   const [historyMovements, setHistoryMovements] = useState<LuggageMovement[]>([])
   const [historyPhotos, setHistoryPhotos] = useState<PhotoRecord[]>([])
-  const [historyPhotoUrls, setHistoryPhotoUrls] = useState<Record<string, string>>({})
   const [historyLoading, setHistoryLoading] = useState(false)
 
   const loadPassengers = useCallback(async () => {
@@ -151,43 +148,50 @@ export function PassengersPage() {
   }, [])
 
   useEffect(() => {
-    void loadPassengers()
+    const timeoutId = window.setTimeout(() => {
+      void loadPassengers()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
   }, [loadPassengers])
 
-  useEffect(() => {
-    if (!setPhoto) {
-      setSetPhotoUrl('')
-      return
-    }
+  const setPhotoUrl = useMemo(
+    () => (setPhoto ? URL.createObjectURL(setPhoto.blob) : ''),
+    [setPhoto],
+  )
 
-    const url = URL.createObjectURL(setPhoto.blob)
-    setSetPhotoUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [setPhoto])
-
-  useEffect(() => {
+  const luggagePhotoUrls = useMemo(() => {
     const urls: Record<string, string> = {}
     for (const [luggageId, photo] of Object.entries(luggagePhotos)) {
       urls[luggageId] = URL.createObjectURL(photo.blob)
     }
-    setLuggagePhotoUrls(urls)
-
-    return () => {
-      Object.values(urls).forEach((url) => URL.revokeObjectURL(url))
-    }
+    return urls
   }, [luggagePhotos])
 
-  useEffect(() => {
+  const historyPhotoUrls = useMemo(() => {
     const urls: Record<string, string> = {}
     for (const photo of historyPhotos) {
       urls[photo.id] = URL.createObjectURL(photo.blob)
     }
-    setHistoryPhotoUrls(urls)
-
-    return () => {
-      Object.values(urls).forEach((url) => URL.revokeObjectURL(url))
-    }
+    return urls
   }, [historyPhotos])
+
+  useEffect(() => {
+    if (!setPhotoUrl) return
+    return () => URL.revokeObjectURL(setPhotoUrl)
+  }, [setPhotoUrl])
+
+  useEffect(() => {
+    return () => {
+      Object.values(luggagePhotoUrls).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [luggagePhotoUrls])
+
+  useEffect(() => {
+    return () => {
+      Object.values(historyPhotoUrls).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [historyPhotoUrls])
 
   const filteredPassengers = useMemo(() => {
     const normalizedQuery = query
