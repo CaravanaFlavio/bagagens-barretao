@@ -6,6 +6,7 @@ export type LuggageStage =
   | 'WITH_PASSENGER'
   | 'TRAILER_RETURN'
   | 'WAREHOUSE_RETURN'
+  | 'DELIVERED_TO_CITY'
 
 export type MovementType =
   | 'REGISTERED_AT_WAREHOUSE'
@@ -13,6 +14,7 @@ export type MovementType =
   | 'TRAILER_TO_PASSENGER'
   | 'PASSENGER_TO_TRAILER'
   | 'TRAILER_TO_WAREHOUSE'
+  | 'WAREHOUSE_TO_CITY'
 
 export type OperationKey =
   | 'WAREHOUSE_TO_TRAILER'
@@ -25,6 +27,7 @@ export type OperationKey =
 export type CodeSource = 'MANUAL' | 'SCANNER'
 export type PhotoKind = 'PASSENGER_SET' | 'LUGGAGE_DETAIL' | 'OPERATION_EVIDENCE'
 export type OperationViewFilter = 'PENDING' | 'COMPLETED' | 'UNEXPECTED' | 'ALL'
+export type CityTransferStatus = 'DRAFT' | 'FINALIZED'
 
 export interface Passenger {
   id: string
@@ -72,6 +75,7 @@ export interface LuggageMovement {
   luggageId: string
   type: MovementType
   operationKey?: OperationKey
+  cityTransferId?: string
   fromStage: LuggageStage | null
   toStage: LuggageStage
   occurredAt: string
@@ -90,6 +94,23 @@ export interface OperationClosure {
   remainingLuggageIds: string[]
   unexpectedLuggageIds: string[]
   passengerIdsWithoutLuggage: string[]
+}
+
+export interface CityTransfer {
+  id: string
+  city: string
+  status: CityTransferStatus
+  responsibleName: string
+  vehicleDescription: string
+  vehiclePlate: string
+  note: string
+  scannedLuggageIds: string[]
+  expectedLuggageIds: string[]
+  missingLuggageIds: string[]
+  issueNote: string
+  startedAt: string
+  updatedAt: string
+  finalizedAt?: string
 }
 
 export interface PassengerSummary extends Passenger {
@@ -169,10 +190,74 @@ export interface OperationScanCheck {
   passenger?: Passenger
 }
 
+export type CityTransferScanStatus =
+  | 'READY'
+  | 'ALREADY_SCANNED'
+  | 'ALREADY_DELIVERED'
+  | 'WRONG_CITY'
+  | 'NOT_READY'
+  | 'NOT_FOUND'
+  | 'BLOCKED'
+
+export interface CityTransferScanCheck {
+  status: CityTransferScanStatus
+  message: string
+  luggage?: Luggage
+  passenger?: Passenger
+}
+
+export interface CityDeliverySummary {
+  city: string
+  passengerCount: number
+  luggageCount: number
+  readyCount: number
+  deliveredCount: number
+  notReadyCount: number
+  draftScannedCount: number
+  latestTransfer?: CityTransfer
+}
+
+export interface CityDeliveryOverview {
+  generatedAt: string
+  cities: CityDeliverySummary[]
+  finalizedTransfers: CityTransfer[]
+}
+
+export interface CityTransferWorkspace {
+  transfer: CityTransfer
+  city: string
+  passengerCount: number
+  luggage: LuggageReportItem[]
+  totalCount: number
+  readyCount: number
+  scannedCount: number
+  notReadyCount: number
+  deliveredCount: number
+}
+
+export interface CityTransferDetailsInput {
+  responsibleName: string
+  vehicleDescription: string
+  vehiclePlate: string
+  note: string
+}
+
+export interface CityTransferReceiptItem {
+  luggage: Luggage
+  passenger: Passenger
+}
+
+export interface CityTransferReceipt {
+  transfer: CityTransfer
+  items: CityTransferReceiptItem[]
+  missingItems: CityTransferReceiptItem[]
+}
+
 export type CentralPendencyKind =
   | 'PASSENGER_WITHOUT_LUGGAGE'
   | 'MOVEMENT_EXCEPTION'
   | 'CLOSURE_DIVERGENCE'
+  | 'CITY_TRANSFER_DIVERGENCE'
 
 export interface CentralPendency {
   id: string
@@ -182,6 +267,7 @@ export interface CentralPendency {
   luggage?: Luggage
   movement?: LuggageMovement
   closure?: OperationClosure
+  cityTransfer?: CityTransfer
 }
 
 export interface LuggageReportItem extends Luggage {

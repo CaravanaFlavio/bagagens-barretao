@@ -1,5 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type {
+  CityTransfer,
+  CityTransferStatus,
   Luggage,
   LuggageMovement,
   LuggageStage,
@@ -55,13 +57,22 @@ interface BagagensDatabase extends DBSchema {
       'by-date': string
     }
   }
+  cityTransfers: {
+    key: string
+    value: CityTransfer
+    indexes: {
+      'by-city': string
+      'by-status': CityTransferStatus
+      'by-date': string
+    }
+  }
 }
 
 let databasePromise: Promise<IDBPDatabase<BagagensDatabase>> | null = null
 
 export function getDatabase() {
   if (!databasePromise) {
-    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', 3, {
+    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', 4, {
       upgrade(database, oldVersion) {
         if (oldVersion < 1) {
           const passengerStore = database.createObjectStore('passengers', {
@@ -100,6 +111,15 @@ export function getDatabase() {
           })
           closureStore.createIndex('by-operation', 'operationKey')
           closureStore.createIndex('by-date', 'finalizedAt')
+        }
+
+        if (oldVersion < 4) {
+          const transferStore = database.createObjectStore('cityTransfers', {
+            keyPath: 'id',
+          })
+          transferStore.createIndex('by-city', 'city')
+          transferStore.createIndex('by-status', 'status')
+          transferStore.createIndex('by-date', 'updatedAt')
         }
       },
     })

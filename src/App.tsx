@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import {
-  Building2,
   Search,
   Settings,
   ShieldCheck,
@@ -14,6 +13,7 @@ import { PlaceholderPage } from './pages/PlaceholderPage'
 import { PendenciesPage } from './pages/PendenciesPage'
 import { BarretosPage } from './pages/BarretosPage'
 import { LuggageOperationPage } from './pages/LuggageOperationPage'
+import { CityDeliveryPage } from './pages/CityDeliveryPage'
 import './App.css'
 
 function useConnectionStatus() {
@@ -69,24 +69,7 @@ function App() {
             path="/retorno"
             element={<LuggageOperationPage operationKey="TRAILER_TO_WAREHOUSE" />}
           />
-          <Route
-            path="/entrega-cidades"
-            element={
-              <PlaceholderPage
-                title="Entregar às cidades"
-                subtitle="Transferência final das cargas aos responsáveis pelos caminhões."
-                icon={<Building2 aria-hidden="true" />}
-                nextPhase="Depois da conferência do retorno, criaremos a separação por cidade e o comprovante de transferência ao caminhão responsável."
-                checklist={[
-                  'Selecionar a cidade',
-                  'Conferir os volumes',
-                  'Identificar o responsável',
-                  'Registrar veículo e horário',
-                  'Gerar comprovante de transferência',
-                ]}
-              />
-            }
-          />
+          <Route path="/entrega-cidades" element={<CityDeliveryPage />} />
           <Route path="/pendencias" element={<PendenciesPage />} />
           <Route
             path="/backup"

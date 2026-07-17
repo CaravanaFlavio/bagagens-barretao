@@ -13,6 +13,7 @@ import {
   RefreshCcw,
   Search,
   ShieldAlert,
+  Truck,
   UserRound,
   X,
 } from 'lucide-react'
@@ -43,6 +44,7 @@ const MOVEMENT_LABELS: Record<LuggageMovement['type'], string> = {
   TRAILER_TO_PASSENGER: 'Carreta → passageiro',
   PASSENGER_TO_TRAILER: 'Passageiro → carreta',
   TRAILER_TO_WAREHOUSE: 'Carreta → galpão',
+  WAREHOUSE_TO_CITY: 'Galpão → cidade',
 }
 
 const STAGE_OPTIONS = Object.entries(STAGE_LABELS) as [LuggageStage, string][]
@@ -481,7 +483,7 @@ export function PendenciesPage() {
                   <strong>{TRAVEL_PERIOD_LABELS[summary.travelPeriod]}</strong>
                   <div><span>Passageiros</span><b>{summary.passengerCount}</b></div>
                   <div><span>Bagagens</span><b>{summary.luggageCount}</b></div>
-                  <small>{summary.stageCounts.WAREHOUSE_RETURN} já retornaram ao galpão</small>
+                  <small>{summary.stageCounts.WAREHOUSE_RETURN + summary.stageCounts.DELIVERED_TO_CITY} já retornaram ao galpão · {summary.stageCounts.DELIVERED_TO_CITY} entregues à cidade</small>
                 </article>
               ))}
             </div>
@@ -506,6 +508,7 @@ export function PendenciesPage() {
                     <th>Com passageiro</th>
                     <th>Carreta retorno</th>
                     <th>Galpão retorno</th>
+                    <th>Entregues à cidade</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -519,6 +522,7 @@ export function PendenciesPage() {
                       <td>{summary.stageCounts.WITH_PASSENGER}</td>
                       <td>{summary.stageCounts.TRAILER_RETURN}</td>
                       <td>{summary.stageCounts.WAREHOUSE_RETURN}</td>
+                      <td>{summary.stageCounts.DELIVERED_TO_CITY}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -618,6 +622,7 @@ export function PendenciesPage() {
                 <th>Com passageiro</th>
                 <th>Carreta retorno</th>
                 <th>Galpão retorno</th>
+                <th>Entregues à cidade</th>
               </tr>
             </thead>
             <tbody>
@@ -631,6 +636,7 @@ export function PendenciesPage() {
                   <td>{summary.stageCounts.WITH_PASSENGER}</td>
                   <td>{summary.stageCounts.TRAILER_RETURN}</td>
                   <td>{summary.stageCounts.WAREHOUSE_RETURN}</td>
+                  <td>{summary.stageCounts.DELIVERED_TO_CITY}</td>
                 </tr>
               ))}
             </tbody>
@@ -650,6 +656,7 @@ export function PendenciesPage() {
                 <th>Com passageiro</th>
                 <th>Carreta retorno</th>
                 <th>Galpão retorno</th>
+                <th>Entregues à cidade</th>
               </tr>
             </thead>
             <tbody>
@@ -663,6 +670,7 @@ export function PendenciesPage() {
                   <td>{summary.stageCounts.WITH_PASSENGER}</td>
                   <td>{summary.stageCounts.TRAILER_RETURN}</td>
                   <td>{summary.stageCounts.WAREHOUSE_RETURN}</td>
+                  <td>{summary.stageCounts.DELIVERED_TO_CITY}</td>
                 </tr>
               ))}
             </tbody>
@@ -886,6 +894,23 @@ function PendencyCard({ item }: { item: CentralPendency }) {
           </p>
           {closure.note ? <blockquote>{closure.note}</blockquote> : null}
           <time>{formatDateTime(closure.finalizedAt)}</time>
+        </div>
+      </article>
+    )
+  }
+
+
+  if (item.kind === 'CITY_TRANSFER_DIVERGENCE' && item.cityTransfer) {
+    const transfer = item.cityTransfer
+    return (
+      <article className="pendency-card tone-amber">
+        <div className="pendency-card__icon"><Truck aria-hidden="true" /></div>
+        <div className="pendency-card__content">
+          <span className="pendency-card__kind">Entrega municipal com divergência</span>
+          <h3>{transfer.city}</h3>
+          <p>{transfer.scannedLuggageIds.length} volumes entregues · {transfer.missingLuggageIds.length} não transferidos</p>
+          {transfer.issueNote ? <blockquote>{transfer.issueNote}</blockquote> : null}
+          <time>{formatDateTime(transfer.finalizedAt ?? transfer.updatedAt)}</time>
         </div>
       </article>
     )

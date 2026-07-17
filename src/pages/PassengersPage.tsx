@@ -75,6 +75,7 @@ const MOVEMENT_LABELS: Record<LuggageMovement['type'], string> = {
   TRAILER_TO_PASSENGER: 'Carreta → passageiro',
   PASSENGER_TO_TRAILER: 'Passageiro → carreta',
   TRAILER_TO_WAREHOUSE: 'Carreta → galpão',
+  WAREHOUSE_TO_CITY: 'Galpão → cidade',
 }
 
 const PASSENGER_STAGE_ORDER: LuggageStage[] = [
@@ -83,6 +84,7 @@ const PASSENGER_STAGE_ORDER: LuggageStage[] = [
   'WITH_PASSENGER',
   'TRAILER_RETURN',
   'WAREHOUSE_RETURN',
+  'DELIVERED_TO_CITY',
 ]
 
 function formatDateTime(value: string) {

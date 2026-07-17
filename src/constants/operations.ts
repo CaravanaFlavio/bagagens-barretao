@@ -99,6 +99,7 @@ export const STAGE_LABELS: Record<LuggageStage, string> = {
   WITH_PASSENGER: 'Com o passageiro',
   TRAILER_RETURN: 'Na carreta de retorno',
   WAREHOUSE_RETURN: 'No galpão de retorno',
+  DELIVERED_TO_CITY: 'Entregue à cidade',
 }
 
 export const OPERATION_ROUTES: Record<OperationKey, string> = {

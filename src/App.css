@@ -3777,3 +3777,682 @@ svg {
     color: #425466;
   }
 }
+
+/* Fase 6: transferência final das bagagens para os municípios */
+.passenger-stage-chip.stage-delivered_to_city,
+.luggage-current-stage.stage-delivered_to_city,
+.report-stage-item.stage-delivered_to_city {
+  color: #4b347d;
+  background: #efe9fb;
+}
+
+.city-delivery-page {
+  display: grid;
+  gap: 22px;
+}
+
+.city-delivery-hero {
+  background: linear-gradient(135deg, var(--navy-950), #28576e);
+}
+
+.city-delivery-filter-card,
+.city-transfer-history-card,
+.city-transfer-details-card,
+.city-transfer-luggage-card {
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.city-delivery-filter-card {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 13px;
+}
+
+.city-toggle-field {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  color: var(--ink-700);
+  background: #fff;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.city-toggle-field input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--navy-800);
+}
+
+.city-delivery-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.city-delivery-card {
+  display: grid;
+  gap: 13px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.city-delivery-card.is-complete {
+  border-color: #bfe2d2;
+  background: #f7fcf9;
+}
+
+.city-delivery-card__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+}
+
+.city-delivery-card__icon {
+  display: grid;
+  width: 43px;
+  height: 43px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--blue-600);
+  background: var(--blue-100);
+}
+
+.city-delivery-card__icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.city-delivery-card__header h3,
+.city-delivery-card__header span {
+  display: block;
+  margin: 0;
+}
+
+.city-delivery-card__header h3 {
+  font-size: 0.95rem;
+}
+
+.city-delivery-card__header span,
+.city-delivery-card > small {
+  margin-top: 3px;
+  color: var(--ink-500);
+  font-size: 0.65rem;
+}
+
+.city-delivery-card__numbers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.city-delivery-card__numbers span {
+  padding: 8px;
+  border-radius: 10px;
+  color: var(--ink-700);
+  background: #f3f6f8;
+  font-size: 0.65rem;
+}
+
+.city-delivery-card__numbers strong {
+  margin-right: 3px;
+  color: var(--navy-900);
+  font-size: 0.83rem;
+}
+
+.city-delivery-card__numbers .has-issues {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.city-delivery-card__numbers .has-issues strong {
+  color: inherit;
+}
+
+.city-transfer-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.city-transfer-history-item {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #c5e3d5;
+  border-radius: 13px;
+  background: #f5fbf8;
+}
+
+.city-transfer-history-item.has-issues {
+  border-color: #ecc98f;
+  background: #fffaf1;
+}
+
+.city-transfer-history-item > div strong,
+.city-transfer-history-item > div span,
+.city-transfer-history-item > div em {
+  display: block;
+}
+
+.city-transfer-history-item > div strong {
+  font-size: 0.84rem;
+}
+
+.city-transfer-history-item > div span {
+  margin-top: 2px;
+  color: var(--ink-500);
+  font-size: 0.63rem;
+}
+
+.city-transfer-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.city-transfer-history-meta span,
+.city-transfer-history-meta em {
+  padding: 5px 7px;
+  border-radius: 999px;
+  color: var(--ink-700);
+  background: #e9eff3;
+  font-size: 0.61rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.city-transfer-history-meta em {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.city-transfer-history-meta em.is-clear {
+  color: var(--green-700);
+  background: var(--green-100);
+}
+
+.city-transfer-workspace {
+  display: grid;
+  gap: 15px;
+}
+
+.city-transfer-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.city-transfer-progress-grid > div {
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fafb;
+}
+
+.city-transfer-progress-grid span,
+.city-transfer-progress-grid strong {
+  display: block;
+}
+
+.city-transfer-progress-grid span {
+  color: var(--ink-500);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.city-transfer-progress-grid strong {
+  margin-top: 3px;
+  font-size: 1.18rem;
+}
+
+.city-transfer-progress-grid .is-ready {
+  color: var(--blue-600);
+  background: var(--blue-100);
+}
+
+.city-transfer-progress-grid .is-scanned,
+.city-transfer-progress-grid .is-clear {
+  color: var(--green-700);
+  background: var(--green-100);
+}
+
+.city-transfer-progress-grid .has-issues {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.city-transfer-details-card,
+.city-transfer-luggage-card {
+  display: grid;
+  gap: 13px;
+  box-shadow: none;
+}
+
+.city-transfer-list-header {
+  display: grid;
+  gap: 10px;
+}
+
+.city-transfer-view-select {
+  min-width: 210px;
+}
+
+.city-transfer-luggage-list {
+  display: grid;
+  gap: 7px;
+}
+
+.city-transfer-luggage-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: #f5f7f9;
+}
+
+.city-transfer-luggage-row.is-scanned {
+  border-color: #bfe2d2;
+  background: #f0f9f5;
+}
+
+.city-transfer-luggage-row.is-delivered {
+  border-color: #d8cbed;
+  background: #f7f3fc;
+}
+
+.city-transfer-luggage-row.is-not-ready {
+  border-color: #ecc98f;
+  background: #fffaf1;
+}
+
+.city-transfer-luggage-main {
+  min-width: 0;
+}
+
+.city-transfer-luggage-main strong,
+.city-transfer-luggage-main span {
+  display: block;
+}
+
+.city-transfer-luggage-main strong {
+  font-size: 0.78rem;
+}
+
+.city-transfer-luggage-main span {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.city-transfer-luggage-status {
+  max-width: 125px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  color: var(--ink-700);
+  background: #e7edf2;
+  text-align: center;
+  font-size: 0.58rem;
+  font-weight: 850;
+}
+
+.is-scanned .city-transfer-luggage-status {
+  color: var(--green-700);
+  background: var(--green-100);
+}
+
+.is-delivered .city-transfer-luggage-status {
+  color: #4b347d;
+  background: #efe9fb;
+}
+
+.is-not-ready .city-transfer-luggage-status {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.city-transfer-luggage-row .mini-action-button {
+  grid-column: 2 / -1;
+  justify-self: end;
+}
+
+.city-transfer-footer {
+  display: grid;
+  gap: 10px;
+}
+
+.city-receipt-modal-content {
+  display: grid;
+  gap: 16px;
+}
+
+.city-receipt-document {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+
+.city-receipt-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--navy-800);
+}
+
+.city-receipt-header p,
+.city-receipt-header h2,
+.city-receipt-header span {
+  margin: 0;
+}
+
+.city-receipt-header p {
+  color: var(--ink-500);
+  font-size: 0.65rem;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+}
+
+.city-receipt-header h2 {
+  margin-top: 4px;
+  font-size: 1.25rem;
+}
+
+.city-receipt-header span {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-700);
+  font-size: 0.72rem;
+}
+
+.city-receipt-city {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  color: var(--navy-700);
+  background: var(--blue-100);
+  font-size: 0.78rem;
+}
+
+.city-receipt-city svg {
+  width: 18px;
+  height: 18px;
+}
+
+.city-receipt-details,
+.city-receipt-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.city-receipt-details > div,
+.city-receipt-summary > div {
+  padding: 10px;
+  border-radius: 10px;
+  background: #f5f7f9;
+}
+
+.city-receipt-details span,
+.city-receipt-details strong,
+.city-receipt-summary span,
+.city-receipt-summary strong {
+  display: block;
+}
+
+.city-receipt-details span,
+.city-receipt-summary span {
+  color: var(--ink-500);
+  font-size: 0.63rem;
+  font-weight: 800;
+}
+
+.city-receipt-details strong {
+  margin-top: 3px;
+  font-size: 0.76rem;
+}
+
+.city-receipt-summary strong {
+  margin-top: 3px;
+  font-size: 1.15rem;
+}
+
+.city-receipt-summary .is-clear {
+  color: var(--green-700);
+  background: var(--green-100);
+}
+
+.city-receipt-summary .has-issues {
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.city-receipt-document h3 {
+  margin: 0 0 8px;
+  font-size: 0.84rem;
+}
+
+.city-receipt-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.city-receipt-table th,
+.city-receipt-table td {
+  padding: 8px;
+  border: 1px solid var(--line);
+  text-align: left;
+  font-size: 0.68rem;
+}
+
+.city-receipt-table th {
+  color: var(--ink-700);
+  background: #f1f5f7;
+}
+
+.city-receipt-divergence,
+.city-receipt-note {
+  padding: 11px;
+  border-radius: 11px;
+  color: var(--amber-700);
+  background: var(--amber-100);
+}
+
+.city-receipt-divergence p,
+.city-receipt-divergence blockquote,
+.city-receipt-note p {
+  margin: 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.city-receipt-divergence blockquote {
+  margin-top: 7px;
+  padding-left: 9px;
+  border-left: 3px solid currentColor;
+}
+
+.city-receipt-note {
+  color: var(--ink-700);
+  background: #f5f7f9;
+}
+
+.city-receipt-note strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.7rem;
+}
+
+.city-receipt-signatures {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 25px;
+  padding-top: 35px;
+}
+
+.city-receipt-signatures > div {
+  padding-top: 7px;
+  border-top: 1px solid #475569;
+  text-align: center;
+}
+
+.city-receipt-signatures span,
+.city-receipt-signatures small {
+  display: block;
+  font-size: 0.68rem;
+}
+
+.city-receipt-signatures small {
+  margin-top: 2px;
+  color: var(--ink-500);
+}
+
+.city-receipt-print {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .report-stage-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .city-delivery-filter-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .city-delivery-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .city-transfer-progress-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .city-transfer-list-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .city-transfer-footer {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .city-transfer-history-item {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+  }
+}
+
+@media (min-width: 980px) {
+  .city-delivery-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .city-transfer-luggage-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .city-transfer-luggage-status {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .city-transfer-luggage-row .mini-action-button {
+    grid-column: 2;
+  }
+
+  .city-receipt-header {
+    flex-direction: column;
+  }
+
+  .city-receipt-details,
+  .city-receipt-summary,
+  .city-receipt-signatures {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  .city-delivery-page > :not(.city-receipt-print),
+  .city-delivery-page ~ *,
+  .modal-backdrop {
+    display: none !important;
+  }
+
+  .city-receipt-print {
+    display: block !important;
+  }
+
+  .city-receipt-document {
+    gap: 4mm;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    color: #111;
+  }
+
+  .city-receipt-header {
+    padding-bottom: 3mm;
+  }
+
+  .city-receipt-header h2 {
+    font-size: 17pt;
+  }
+
+  .city-receipt-details,
+  .city-receipt-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2mm;
+  }
+
+  .city-receipt-details > div,
+  .city-receipt-summary > div {
+    padding: 2.5mm;
+    border: 1px solid #cbd5df;
+  }
+
+  .city-receipt-table thead {
+    display: table-header-group;
+  }
+
+  .city-receipt-table tr {
+    break-inside: avoid;
+  }
+
+  .city-receipt-table th,
+  .city-receipt-table td {
+    padding: 1.8mm 2mm;
+    font-size: 8pt;
+  }
+
+  .city-receipt-signatures {
+    padding-top: 12mm;
+  }
+}

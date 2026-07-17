@@ -1,12 +1,20 @@
+import { CITIES } from '../constants/cities'
 import { OPERATION_DEFINITIONS, STAGE_LABELS } from '../constants/operations'
 import { getDatabase } from './appDatabase'
 import type {
   CentralPendency,
+  CityDeliveryOverview,
   CityReportSummary,
+  CityTransfer,
+  CityTransferDetailsInput,
+  CityTransferReceipt,
+  CityTransferScanCheck,
+  CityTransferWorkspace,
   DashboardSummary,
   Luggage,
   LuggageInput,
   LuggageMovement,
+  LuggageReportItem,
   Passenger,
   PassengerInput,
   PassengerSummary,
@@ -65,6 +73,7 @@ export async function listPassengers(): Promise<PassengerSummary[]> {
     WITH_PASSENGER: 0,
     TRAILER_RETURN: 0,
     WAREHOUSE_RETURN: 0,
+    DELIVERED_TO_CITY: 0,
   })
 
   for (const item of luggage) {
@@ -112,20 +121,35 @@ export async function savePassenger(
 export async function deletePassengerPermanently(passengerId: string) {
   const database = await getDatabase()
   const transaction = database.transaction(
-    ['passengers', 'luggage', 'movements', 'photos'],
+    ['passengers', 'luggage', 'movements', 'photos', 'cityTransfers'],
     'readwrite',
   )
 
   const luggageStore = transaction.objectStore('luggage')
   const movementStore = transaction.objectStore('movements')
   const photoStore = transaction.objectStore('photos')
+  const transferStore = transaction.objectStore('cityTransfers')
   const passengerLuggage = await luggageStore.index('by-passenger').getAll(passengerId)
   const passengerPhotoKeys = await photoStore.index('by-passenger').getAllKeys(passengerId)
+  const luggageIds = new Set(passengerLuggage.map((item) => item.id))
 
   for (const luggage of passengerLuggage) {
     const movementKeys = await movementStore.index('by-luggage').getAllKeys(luggage.id)
     await Promise.all(movementKeys.map((movementId) => movementStore.delete(movementId)))
     await luggageStore.delete(luggage.id)
+  }
+
+  const transfers = await transferStore.getAll()
+  for (const transfer of transfers) {
+    const removeIds = (ids: string[]) => ids.filter((id) => !luggageIds.has(id))
+    const updated: CityTransfer = {
+      ...transfer,
+      scannedLuggageIds: removeIds(transfer.scannedLuggageIds),
+      expectedLuggageIds: removeIds(transfer.expectedLuggageIds),
+      missingLuggageIds: removeIds(transfer.missingLuggageIds),
+      updatedAt: now(),
+    }
+    await transferStore.put(updated)
   }
 
   await Promise.all(passengerPhotoKeys.map((photoId) => photoStore.delete(photoId)))
@@ -191,14 +215,31 @@ export async function createLuggage(input: LuggageInput): Promise<Luggage> {
 
 export async function deleteLuggagePermanently(luggageId: string) {
   const database = await getDatabase()
-  const transaction = database.transaction(['luggage', 'movements', 'photos'], 'readwrite')
+  const transaction = database.transaction(
+    ['luggage', 'movements', 'photos', 'cityTransfers'],
+    'readwrite',
+  )
   const movementStore = transaction.objectStore('movements')
   const photoStore = transaction.objectStore('photos')
+  const transferStore = transaction.objectStore('cityTransfers')
   const movementKeys = await movementStore.index('by-luggage').getAllKeys(luggageId)
   const photoKeys = await photoStore.index('by-luggage').getAllKeys(luggageId)
 
   await Promise.all(movementKeys.map((movementId) => movementStore.delete(movementId)))
   await Promise.all(photoKeys.map((photoId) => photoStore.delete(photoId)))
+
+  const transfers = await transferStore.getAll()
+  for (const transfer of transfers) {
+    const removeId = (ids: string[]) => ids.filter((id) => id !== luggageId)
+    await transferStore.put({
+      ...transfer,
+      scannedLuggageIds: removeId(transfer.scannedLuggageIds),
+      expectedLuggageIds: removeId(transfer.expectedLuggageIds),
+      missingLuggageIds: removeId(transfer.missingLuggageIds),
+      updatedAt: now(),
+    })
+  }
+
   await transaction.objectStore('luggage').delete(luggageId)
   await transaction.done
 }
@@ -346,6 +387,7 @@ function emptyStageCounts(): Record<Luggage['currentStage'], number> {
     WITH_PASSENGER: 0,
     TRAILER_RETURN: 0,
     WAREHOUSE_RETURN: 0,
+    DELIVERED_TO_CITY: 0,
   }
 }
 
@@ -359,11 +401,12 @@ function closureHasDivergence(closure: OperationClosure) {
 
 export async function getPendenciesReport(): Promise<PendenciesReport> {
   const database = await getDatabase()
-  const [passengers, allLuggage, movements, closures] = await Promise.all([
+  const [passengers, allLuggage, movements, closures, cityTransfers] = await Promise.all([
     database.getAll('passengers'),
     database.getAll('luggage'),
     database.getAll('movements'),
     database.getAll('operationClosures'),
+    database.getAll('cityTransfers'),
   ])
 
   const passengerMap = new Map(passengers.map((passenger) => [passenger.id, passenger]))
@@ -438,6 +481,7 @@ export async function getPendenciesReport(): Promise<PendenciesReport> {
   const divergentLatestClosures = Array.from(latestClosureByOperation.values()).filter(
     closureHasDivergence,
   )
+  const divergentCityTransfers = cityTransfers.filter(transferHasMissingItems)
 
   const pendencies: CentralPendency[] = [
     ...passengersWithoutLuggage.map((passenger) => ({
@@ -461,6 +505,12 @@ export async function getPendenciesReport(): Promise<PendenciesReport> {
       kind: 'CLOSURE_DIVERGENCE' as const,
       occurredAt: closure.finalizedAt,
       closure,
+    })),
+    ...divergentCityTransfers.map((cityTransfer) => ({
+      id: `city_transfer_divergence_${cityTransfer.id}`,
+      kind: 'CITY_TRANSFER_DIVERGENCE' as const,
+      occurredAt: cityTransfer.finalizedAt ?? cityTransfer.updatedAt,
+      cityTransfer,
     })),
   ].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
 
@@ -517,11 +567,13 @@ export async function getPendenciesReport(): Promise<PendenciesReport> {
     luggageCount: allLuggage.length,
     passengerWithoutLuggageCount: passengersWithoutLuggage.length,
     exceptionCount: exceptionMovements.length,
-    divergentClosureCount: divergentLatestClosures.length,
+    divergentClosureCount:
+      divergentLatestClosures.length + divergentCityTransfers.length,
     activePendencyCount:
       passengersWithoutLuggage.length +
       exceptionMovements.length +
-      divergentLatestClosures.length,
+      divergentLatestClosures.length +
+      divergentCityTransfers.length,
     stageCounts,
     pendencies,
     luggage,
@@ -552,6 +604,7 @@ function stageOrder(stage: Luggage['currentStage']) {
     WITH_PASSENGER: 2,
     TRAILER_RETURN: 3,
     WAREHOUSE_RETURN: 4,
+    DELIVERED_TO_CITY: 5,
   }
   return order[stage]
 }
@@ -953,4 +1006,430 @@ export async function finalizeOperation(
   }
   await database.add('operationClosures', closure)
   return closure
+}
+
+
+function cityPassengerMap(passengers: Passenger[], city: string) {
+  return new Map(
+    passengers
+      .filter((passenger) => passenger.city === city)
+      .map((passenger) => [passenger.id, passenger]),
+  )
+}
+
+function transferHasMissingItems(transfer: CityTransfer) {
+  return transfer.status === 'FINALIZED' && transfer.missingLuggageIds.length > 0
+}
+
+export async function getCityDeliveryOverview(): Promise<CityDeliveryOverview> {
+  const database = await getDatabase()
+  const [passengers, allLuggage, transfers] = await Promise.all([
+    database.getAll('passengers'),
+    database.getAll('luggage'),
+    database.getAll('cityTransfers'),
+  ])
+
+  const finalizedTransfers = transfers
+    .filter((transfer) => transfer.status === 'FINALIZED')
+    .sort((a, b) => (b.finalizedAt ?? b.updatedAt).localeCompare(a.finalizedAt ?? a.updatedAt))
+
+  const cities = CITIES.map((city) => {
+    const cityPassengers = passengers.filter((passenger) => passenger.city === city)
+    const cityPassengerIds = new Set(cityPassengers.map((passenger) => passenger.id))
+    const cityLuggage = allLuggage.filter((item) => cityPassengerIds.has(item.passengerId))
+    const cityTransfers = transfers
+      .filter((transfer) => transfer.city === city && transfer.status === 'FINALIZED')
+      .sort((a, b) => (b.finalizedAt ?? b.updatedAt).localeCompare(a.finalizedAt ?? a.updatedAt))
+    const draft = transfers.find(
+      (transfer) => transfer.city === city && transfer.status === 'DRAFT',
+    )
+
+    return {
+      city,
+      passengerCount: cityPassengers.length,
+      luggageCount: cityLuggage.length,
+      readyCount: cityLuggage.filter((item) => item.currentStage === 'WAREHOUSE_RETURN').length,
+      deliveredCount: cityLuggage.filter((item) => item.currentStage === 'DELIVERED_TO_CITY').length,
+      notReadyCount: cityLuggage.filter(
+        (item) =>
+          item.currentStage !== 'WAREHOUSE_RETURN' &&
+          item.currentStage !== 'DELIVERED_TO_CITY',
+      ).length,
+      draftScannedCount: draft?.scannedLuggageIds.filter((id) =>
+        cityLuggage.some((item) => item.id === id && item.currentStage === 'WAREHOUSE_RETURN'),
+      ).length ?? 0,
+      latestTransfer: cityTransfers[0],
+    }
+  })
+
+
+  return {
+    generatedAt: now(),
+    cities,
+    finalizedTransfers,
+  }
+}
+
+export async function getOrCreateCityTransferDraft(city: string): Promise<CityTransfer> {
+  const database = await getDatabase()
+  const cityTransfers = await database.getAllFromIndex('cityTransfers', 'by-city', city)
+  const existing = cityTransfers
+    .filter((transfer) => transfer.status === 'DRAFT')
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
+  if (existing) return existing
+
+  const timestamp = now()
+  const transfer: CityTransfer = {
+    id: newId('city_transfer'),
+    city,
+    status: 'DRAFT',
+    responsibleName: '',
+    vehicleDescription: '',
+    vehiclePlate: '',
+    note: '',
+    scannedLuggageIds: [],
+    expectedLuggageIds: [],
+    missingLuggageIds: [],
+    issueNote: '',
+    startedAt: timestamp,
+    updatedAt: timestamp,
+  }
+  await database.add('cityTransfers', transfer)
+  return transfer
+}
+
+export async function getCityTransferWorkspace(
+  city: string,
+): Promise<CityTransferWorkspace> {
+  const database = await getDatabase()
+  let transfer = await getOrCreateCityTransferDraft(city)
+  const [passengers, allLuggage, allMovements] = await Promise.all([
+    database.getAll('passengers'),
+    database.getAll('luggage'),
+    database.getAll('movements'),
+  ])
+  const passengerMap = cityPassengerMap(passengers, city)
+  const cityLuggage = allLuggage.filter((item) => passengerMap.has(item.passengerId))
+  const validScannedIds = transfer.scannedLuggageIds.filter((id) =>
+    cityLuggage.some((item) => item.id === id && item.currentStage === 'WAREHOUSE_RETURN'),
+  )
+  if (validScannedIds.length !== transfer.scannedLuggageIds.length) {
+    transfer = {
+      ...transfer,
+      scannedLuggageIds: validScannedIds,
+      updatedAt: now(),
+    }
+    await database.put('cityTransfers', transfer)
+  }
+
+  const latestMovementByLuggage = new Map<string, LuggageMovement>()
+  for (const movement of allMovements) {
+    const current = latestMovementByLuggage.get(movement.luggageId)
+    if (!current || movement.occurredAt > current.occurredAt) {
+      latestMovementByLuggage.set(movement.luggageId, movement)
+    }
+  }
+
+  const luggage: LuggageReportItem[] = cityLuggage
+    .map((item) => ({
+      ...item,
+      passenger: passengerMap.get(item.passengerId)!,
+      latestMovement: latestMovementByLuggage.get(item.id),
+    }))
+    .sort((a, b) => {
+      const ownerOrder = a.passenger.fullName.localeCompare(b.passenger.fullName, 'pt-BR')
+      return ownerOrder || a.code.localeCompare(b.code, 'pt-BR', { numeric: true })
+    })
+
+  return {
+    transfer,
+    city,
+    passengerCount: passengerMap.size,
+    luggage,
+    totalCount: cityLuggage.length,
+    readyCount: cityLuggage.filter((item) => item.currentStage === 'WAREHOUSE_RETURN').length,
+    scannedCount: validScannedIds.length,
+    notReadyCount: cityLuggage.filter(
+      (item) =>
+        item.currentStage !== 'WAREHOUSE_RETURN' &&
+        item.currentStage !== 'DELIVERED_TO_CITY',
+    ).length,
+    deliveredCount: cityLuggage.filter((item) => item.currentStage === 'DELIVERED_TO_CITY').length,
+  }
+}
+
+export async function saveCityTransferDraftDetails(
+  transferId: string,
+  input: CityTransferDetailsInput,
+): Promise<CityTransfer> {
+  const database = await getDatabase()
+  const transfer = await database.get('cityTransfers', transferId)
+  if (!transfer || transfer.status !== 'DRAFT') {
+    throw new Error('A transferência em andamento não foi encontrada.')
+  }
+
+  const updated: CityTransfer = {
+    ...transfer,
+    responsibleName: input.responsibleName.trim(),
+    vehicleDescription: input.vehicleDescription.trim(),
+    vehiclePlate: input.vehiclePlate.trim().toLocaleUpperCase('pt-BR'),
+    note: input.note.trim(),
+    updatedAt: now(),
+  }
+  await database.put('cityTransfers', updated)
+  return updated
+}
+
+export async function checkLuggageForCityTransfer(
+  city: string,
+  transferId: string,
+  rawCode: string,
+): Promise<CityTransferScanCheck> {
+  const database = await getDatabase()
+  const normalizedCode = normalizeCode(rawCode)
+  if (!normalizedCode) {
+    return { status: 'NOT_FOUND', message: 'Digite ou escaneie o código da bagagem.' }
+  }
+
+  const [transfer, luggage] = await Promise.all([
+    database.get('cityTransfers', transferId),
+    database.getFromIndex('luggage', 'by-code', normalizedCode),
+  ])
+  if (!transfer || transfer.status !== 'DRAFT' || transfer.city !== city) {
+    return { status: 'BLOCKED', message: 'A conferência desta cidade não está mais ativa.' }
+  }
+  if (!luggage) {
+    return {
+      status: 'NOT_FOUND',
+      message: `Nenhuma bagagem foi encontrada com o código ${rawCode.trim()}.`,
+    }
+  }
+
+  const passenger = await database.get('passengers', luggage.passengerId)
+  if (!passenger) {
+    return {
+      status: 'BLOCKED',
+      message: 'O passageiro vinculado à bagagem não foi encontrado.',
+      luggage,
+    }
+  }
+  if (passenger.city !== city) {
+    return {
+      status: 'WRONG_CITY',
+      message: `A bagagem ${luggage.code} pertence a ${passenger.city}, e não a ${city}.`,
+      luggage,
+      passenger,
+    }
+  }
+  if (transfer.scannedLuggageIds.includes(luggage.id)) {
+    return {
+      status: 'ALREADY_SCANNED',
+      message: `A bagagem ${luggage.code} já foi conferida nesta transferência.`,
+      luggage,
+      passenger,
+    }
+  }
+  if (luggage.currentStage === 'DELIVERED_TO_CITY') {
+    return {
+      status: 'ALREADY_DELIVERED',
+      message: `A bagagem ${luggage.code} já foi entregue à cidade anteriormente.`,
+      luggage,
+      passenger,
+    }
+  }
+  if (luggage.currentStage !== 'WAREHOUSE_RETURN') {
+    return {
+      status: 'NOT_READY',
+      message: `A bagagem ${luggage.code} ainda está em “${STAGE_LABELS[luggage.currentStage]}” e não pode ser entregue ao caminhão da cidade.`,
+      luggage,
+      passenger,
+    }
+  }
+
+  return {
+    status: 'READY',
+    message: 'Bagagem pronta para ser vinculada à transferência.',
+    luggage,
+    passenger,
+  }
+}
+
+export async function addLuggageToCityTransferDraft(
+  transferId: string,
+  luggageId: string,
+): Promise<CityTransfer> {
+  const database = await getDatabase()
+  const transaction = database.transaction(
+    ['cityTransfers', 'luggage', 'passengers'],
+    'readwrite',
+  )
+  const transferStore = transaction.objectStore('cityTransfers')
+  const luggageStore = transaction.objectStore('luggage')
+  const passengerStore = transaction.objectStore('passengers')
+  const transfer = await transferStore.get(transferId)
+  const luggage = await luggageStore.get(luggageId)
+
+  if (!transfer || transfer.status !== 'DRAFT') {
+    throw new Error('A transferência em andamento não foi encontrada.')
+  }
+  if (!luggage) throw new Error('A bagagem não foi encontrada.')
+  const passenger = await passengerStore.get(luggage.passengerId)
+  if (!passenger) throw new Error('O passageiro vinculado à bagagem não foi encontrado.')
+  if (passenger.city !== transfer.city) {
+    throw new Error(`Esta bagagem pertence a ${passenger.city}, e não a ${transfer.city}.`)
+  }
+  if (luggage.currentStage !== 'WAREHOUSE_RETURN') {
+    throw new Error(`A bagagem está em “${STAGE_LABELS[luggage.currentStage]}” e ainda não está pronta para a entrega à cidade.`)
+  }
+
+  const updated: CityTransfer = {
+    ...transfer,
+    scannedLuggageIds: Array.from(new Set([...transfer.scannedLuggageIds, luggage.id])),
+    updatedAt: now(),
+  }
+  await transferStore.put(updated)
+  await transaction.done
+  return updated
+}
+
+export async function removeLuggageFromCityTransferDraft(
+  transferId: string,
+  luggageId: string,
+): Promise<CityTransfer> {
+  const database = await getDatabase()
+  const transfer = await database.get('cityTransfers', transferId)
+  if (!transfer || transfer.status !== 'DRAFT') {
+    throw new Error('A transferência em andamento não foi encontrada.')
+  }
+  const updated: CityTransfer = {
+    ...transfer,
+    scannedLuggageIds: transfer.scannedLuggageIds.filter((id) => id !== luggageId),
+    updatedAt: now(),
+  }
+  await database.put('cityTransfers', updated)
+  return updated
+}
+
+export async function finalizeCityTransfer(
+  transferId: string,
+  details: CityTransferDetailsInput,
+  issueNote: string,
+): Promise<CityTransferReceipt> {
+  const database = await getDatabase()
+  const transaction = database.transaction(
+    ['cityTransfers', 'passengers', 'luggage', 'movements'],
+    'readwrite',
+  )
+  const transferStore = transaction.objectStore('cityTransfers')
+  const passengerStore = transaction.objectStore('passengers')
+  const luggageStore = transaction.objectStore('luggage')
+  const movementStore = transaction.objectStore('movements')
+  const transfer = await transferStore.get(transferId)
+
+  if (!transfer || transfer.status !== 'DRAFT') {
+    throw new Error('A transferência em andamento não foi encontrada.')
+  }
+
+  const responsibleName = details.responsibleName.trim()
+  const vehicleDescription = details.vehicleDescription.trim()
+  const vehiclePlate = details.vehiclePlate.trim().toLocaleUpperCase('pt-BR')
+  if (!responsibleName) throw new Error('Informe o responsável pelo recebimento.')
+  if (!vehicleDescription) throw new Error('Informe o veículo que levará as bagagens.')
+  if (!vehiclePlate) throw new Error('Informe a placa do veículo.')
+
+  const [passengers, allLuggage] = await Promise.all([
+    passengerStore.getAll(),
+    luggageStore.getAll(),
+  ])
+  const passengerMap = cityPassengerMap(passengers, transfer.city)
+  const cityLuggage = allLuggage.filter((item) => passengerMap.has(item.passengerId))
+  const expected = cityLuggage.filter((item) => item.currentStage !== 'DELIVERED_TO_CITY')
+  const scannedSet = new Set(transfer.scannedLuggageIds)
+  const scanned = expected.filter((item) => scannedSet.has(item.id))
+  const missing = expected.filter((item) => !scannedSet.has(item.id))
+
+  if (scanned.length === 0) {
+    throw new Error('Confira pelo menos uma bagagem antes de finalizar a transferência.')
+  }
+  for (const item of scanned) {
+    if (item.currentStage !== 'WAREHOUSE_RETURN') {
+      throw new Error(`A bagagem ${item.code} não está mais disponível no galpão de retorno.`)
+    }
+  }
+  if (missing.length > 0 && !issueNote.trim()) {
+    throw new Error('Existem volumes não transferidos. Informe a justificativa para finalizar.')
+  }
+
+  const timestamp = now()
+  const finalTransfer: CityTransfer = {
+    ...transfer,
+    status: 'FINALIZED',
+    responsibleName,
+    vehicleDescription,
+    vehiclePlate,
+    note: details.note.trim(),
+    scannedLuggageIds: scanned.map((item) => item.id),
+    expectedLuggageIds: expected.map((item) => item.id),
+    missingLuggageIds: missing.map((item) => item.id),
+    issueNote: issueNote.trim(),
+    updatedAt: timestamp,
+    finalizedAt: timestamp,
+  }
+
+  for (const item of scanned) {
+    await luggageStore.put({
+      ...item,
+      currentStage: 'DELIVERED_TO_CITY',
+      updatedAt: timestamp,
+    })
+    await movementStore.add({
+      id: newId('movement'),
+      luggageId: item.id,
+      type: 'WAREHOUSE_TO_CITY',
+      cityTransferId: finalTransfer.id,
+      fromStage: 'WAREHOUSE_RETURN',
+      toStage: 'DELIVERED_TO_CITY',
+      occurredAt: timestamp,
+      note: `Bagagem entregue ao veículo de ${transfer.city}. Responsável: ${responsibleName}. Veículo: ${vehicleDescription} · Placa: ${vehiclePlate}.`,
+      photoIds: [],
+      isException: false,
+    })
+  }
+  await transferStore.put(finalTransfer)
+  await transaction.done
+
+  return getCityTransferReceipt(finalTransfer.id)
+}
+
+export async function getCityTransferReceipt(
+  transferId: string,
+): Promise<CityTransferReceipt> {
+  const database = await getDatabase()
+  const [transfer, passengers, allLuggage] = await Promise.all([
+    database.get('cityTransfers', transferId),
+    database.getAll('passengers'),
+    database.getAll('luggage'),
+  ])
+  if (!transfer) throw new Error('O comprovante desta transferência não foi encontrado.')
+
+  const passengerMap = new Map(passengers.map((passenger) => [passenger.id, passenger]))
+  const luggageMap = new Map(allLuggage.map((item) => [item.id, item]))
+  const mapItems = (ids: string[]) =>
+    ids
+      .map((id) => {
+        const luggage = luggageMap.get(id)
+        const passenger = luggage ? passengerMap.get(luggage.passengerId) : undefined
+        return luggage && passenger ? { luggage, passenger } : null
+      })
+      .filter((item): item is CityTransferReceipt['items'][number] => Boolean(item))
+      .sort((a, b) =>
+        a.passenger.fullName.localeCompare(b.passenger.fullName, 'pt-BR') ||
+        a.luggage.code.localeCompare(b.luggage.code, 'pt-BR', { numeric: true }),
+      )
+
+  return {
+    transfer,
+    items: mapItems(transfer.scannedLuggageIds),
+    missingItems: mapItems(transfer.missingLuggageIds),
+  }
 }
