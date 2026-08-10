@@ -8,6 +8,7 @@ import type {
   OperationClosure,
   OperationKey,
   Passenger,
+  PassengerImportBatch,
   PhotoKind,
   PhotoRecord,
   TravelPeriod,
@@ -66,13 +67,30 @@ interface BagagensDatabase extends DBSchema {
       'by-date': string
     }
   }
+
+  appMetadata: {
+    key: string
+    value: {
+      key: string
+      value: string
+      updatedAt: string
+    }
+  }
+  passengerImportBatches: {
+    key: string
+    value: PassengerImportBatch
+    indexes: {
+      'by-date': string
+      'by-fingerprint': string
+    }
+  }
 }
 
 let databasePromise: Promise<IDBPDatabase<BagagensDatabase>> | null = null
 
 export function getDatabase() {
   if (!databasePromise) {
-    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', 4, {
+    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', 6, {
       upgrade(database, oldVersion) {
         if (oldVersion < 1) {
           const passengerStore = database.createObjectStore('passengers', {
@@ -120,6 +138,20 @@ export function getDatabase() {
           transferStore.createIndex('by-city', 'city')
           transferStore.createIndex('by-status', 'status')
           transferStore.createIndex('by-date', 'updatedAt')
+        }
+
+        if (oldVersion < 5) {
+          database.createObjectStore('appMetadata', {
+            keyPath: 'key',
+          })
+        }
+
+        if (oldVersion < 6) {
+          const importBatchStore = database.createObjectStore('passengerImportBatches', {
+            keyPath: 'id',
+          })
+          importBatchStore.createIndex('by-date', 'importedAt')
+          importBatchStore.createIndex('by-fingerprint', 'fingerprint', { unique: true })
         }
       },
     })

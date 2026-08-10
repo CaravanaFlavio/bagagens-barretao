@@ -28,6 +28,10 @@ export type CodeSource = 'MANUAL' | 'SCANNER'
 export type PhotoKind = 'PASSENGER_SET' | 'LUGGAGE_DETAIL' | 'OPERATION_EVIDENCE'
 export type OperationViewFilter = 'PENDING' | 'COMPLETED' | 'UNEXPECTED' | 'ALL'
 export type CityTransferStatus = 'DRAFT' | 'FINALIZED'
+export type PassengerDocumentType = 'CPF' | 'RG' | 'UNKNOWN'
+export type PassengerBusType = 'DOUBLE_DECKER' | 'CONVENTIONAL' | 'UNSPECIFIED'
+export type PassengerReviewStatus = 'CONFIRMED' | 'REVIEW'
+export type PassengerSourceRole = 'PASSENGER' | 'GUIDE'
 
 export interface Passenger {
   id: string
@@ -36,6 +40,20 @@ export interface Passenger {
   city: string
   phone: string
   travelPeriod: TravelPeriod
+  documentNumber: string
+  documentType: PassengerDocumentType
+  busType: PassengerBusType
+  reviewStatus: PassengerReviewStatus
+  importWarning: string
+  reviewResolvedAt?: string
+  importSourceKey?: string
+  importSourceFile?: string
+  importSourcePage?: number
+  sourceRole?: PassengerSourceRole
+  importedAt?: string
+  lastUpdateSourceFile?: string
+  lastUpdateSourcePage?: number
+  lastUpdatedFromImportAt?: string
   notes: string
   createdAt: string
   updatedAt: string
@@ -122,6 +140,90 @@ export interface DashboardSummary {
   passengerCount: number
   luggageCount: number
   pendingCount: number
+  passengerReviewCount: number
+}
+
+export interface PassengerImport2026Status {
+  sourceTotal: number
+  sourceReviewTotal: number
+  completed: boolean
+  completedAt?: string
+}
+
+export interface PassengerImport2026Result {
+  insertedCount: number
+  reviewCount: number
+  completedAt: string
+  alreadyCompleted: boolean
+}
+
+
+export type PassengerUpdateStatus = 'NEW' | 'CHANGED' | 'UNCHANGED' | 'CONFLICT'
+
+export interface PassengerPdfImportRow {
+  rowKey: string
+  sourceFile: string
+  sourcePage: number
+  fullName: string
+  documentNumber: string
+  documentType: PassengerDocumentType
+  city: string
+  travelPeriod: TravelPeriod | ''
+  busType: PassengerBusType
+  sourceRole: PassengerSourceRole
+  parseWarning: string
+}
+
+export interface PassengerUpdateChange {
+  field: 'fullName' | 'documentNumber' | 'documentType' | 'city' | 'travelPeriod' | 'busType' | 'sourceRole'
+  label: string
+  previousValue: string
+  nextValue: string
+}
+
+export interface PassengerUpdatePreviewItem {
+  id: string
+  row: PassengerPdfImportRow
+  status: PassengerUpdateStatus
+  matchedPassengerId?: string
+  candidatePassengerIds: string[]
+  changes: PassengerUpdateChange[]
+  message: string
+}
+
+export interface PassengerUpdatePreview {
+  fingerprint: string
+  fileNames: string[]
+  analyzedAt: string
+  totalRows: number
+  newCount: number
+  changedCount: number
+  unchangedCount: number
+  conflictCount: number
+  warningCount: number
+  alreadyImportedAt?: string
+  items: PassengerUpdatePreviewItem[]
+}
+
+export interface PassengerImportBatch {
+  id: string
+  fingerprint: string
+  fileNames: string[]
+  importedAt: string
+  totalRows: number
+  newCount: number
+  updatedCount: number
+  unchangedCount: number
+  conflictCount: number
+  warningCount: number
+  conflictNotes: string[]
+}
+
+export interface PassengerUpdateApplyResult {
+  batch: PassengerImportBatch
+  insertedCount: number
+  updatedCount: number
+  conflictCount: number
 }
 
 export interface PassengerInput {
@@ -129,6 +231,10 @@ export interface PassengerInput {
   city: string
   phone: string
   travelPeriod: TravelPeriod
+  documentNumber: string
+  documentType: PassengerDocumentType
+  busType: PassengerBusType
+  reviewStatus: PassengerReviewStatus
   notes: string
 }
 

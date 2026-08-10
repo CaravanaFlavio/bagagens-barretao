@@ -38,6 +38,7 @@ const initialSummary: DashboardSummary = {
   passengerCount: 0,
   luggageCount: 0,
   pendingCount: 0,
+  passengerReviewCount: 0,
 }
 
 export function DashboardPage({ isOnline }: DashboardPageProps) {
@@ -138,7 +139,15 @@ export function DashboardPage({ isOnline }: DashboardPageProps) {
 
         <div className="quick-grid">
           <QuickCard title="Passageiros" description="Cadastrar e incluir bagagens" path="/passageiros" icon={<UsersRound />} badge={summary.passengerCount} />
-          <QuickCard title="Pendências" description="Itens para revisar" path="/pendencias" icon={<AlertTriangle />} badge={summary.pendingCount} />
+          <QuickCard
+            title="Revisar cadastros"
+            description="Duplicidades e dados a confirmar"
+            path="/passageiros?revisar=1"
+            icon={<AlertTriangle />}
+            badge={summary.passengerReviewCount > 0 ? summary.passengerReviewCount : undefined}
+            warning={summary.passengerReviewCount > 0}
+          />
+          <QuickCard title="Pendências" description="Pendências do fluxo de bagagens" path="/pendencias" icon={<AlertTriangle />} badge={summary.pendingCount} />
           <QuickCard title="Contingência" description="Planilha para controle manual" path="/contingencia" icon={<FileSpreadsheet />} />
           <QuickCard title="Backup" description="Cópias e restauração" path="/backup" icon={<Cloud />} />
           <QuickCard title="Configurações" description="Cidades e setores" path="/configuracoes" icon={<Settings />} />
@@ -187,9 +196,23 @@ function OperationCard({ title, description, path, icon, sequence, tone }: Opera
   )
 }
 
-function QuickCard({ title, description, path, icon, badge }: { title: string; description: string; path: string; icon: ReactNode; badge?: number }) {
+function QuickCard({
+  title,
+  description,
+  path,
+  icon,
+  badge,
+  warning = false,
+}: {
+  title: string
+  description: string
+  path: string
+  icon: ReactNode
+  badge?: number
+  warning?: boolean
+}) {
   return (
-    <Link to={path} className="quick-card">
+    <Link to={path} className={`quick-card ${warning ? 'quick-card--warning' : ''}`}>
       <div className="quick-card__icon">{icon}</div>
       <div className="quick-card__content">
         <strong>{title}</strong>

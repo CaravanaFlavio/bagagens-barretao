@@ -1,6 +1,11 @@
 import { CITIES } from '../constants/cities'
 import { OPERATION_DEFINITIONS, STAGE_LABELS } from '../constants/operations'
 import { getDatabase } from './appDatabase'
+import {
+  PASSENGER_IMPORT_2026,
+  PASSENGER_IMPORT_2026_REVIEW_TOTAL,
+  PASSENGER_IMPORT_2026_TOTAL,
+} from './passengerImport2026'
 import type {
   CentralPendency,
   ContingencySnapshot,
@@ -18,6 +23,14 @@ import type {
   LuggageReportItem,
   Passenger,
   PassengerInput,
+  PassengerImport2026Result,
+  PassengerImport2026Status,
+  PassengerImportBatch,
+  PassengerPdfImportRow,
+  PassengerUpdateApplyResult,
+  PassengerUpdateChange,
+  PassengerUpdatePreview,
+  PassengerUpdatePreviewItem,
   PassengerSummary,
   PhotoInput,
   PhotoRecord,
@@ -58,6 +71,19 @@ function withPhotoIds(movement: LuggageMovement, photoIds: string[]) {
   }
 }
 
+function withPassengerDefaults(passenger: Passenger): Passenger {
+  return {
+    ...passenger,
+    documentNumber: passenger.documentNumber ?? '',
+    documentType: passenger.documentType ?? 'UNKNOWN',
+    busType: passenger.busType ?? 'UNSPECIFIED',
+    reviewStatus: passenger.reviewStatus ?? 'CONFIRMED',
+    importWarning: passenger.importWarning ?? '',
+  }
+}
+
+const PASSENGER_IMPORT_2026_METADATA_KEY = 'passenger-import-2026-v1'
+
 export async function listPassengers(): Promise<PassengerSummary[]> {
   const database = await getDatabase()
   const [passengers, luggage] = await Promise.all([
@@ -85,11 +111,14 @@ export async function listPassengers(): Promise<PassengerSummary[]> {
   }
 
   return passengers
-    .map((passenger) => ({
-      ...passenger,
-      luggageCount: counts.get(passenger.id) ?? 0,
-      luggageStageCounts: stageCounts.get(passenger.id) ?? emptyStageCounts(),
-    }))
+    .map((storedPassenger) => {
+      const passenger = withPassengerDefaults(storedPassenger)
+      return {
+        ...passenger,
+        luggageCount: counts.get(passenger.id) ?? 0,
+        luggageStageCounts: stageCounts.get(passenger.id) ?? emptyStageCounts(),
+      }
+    })
     .sort((a, b) => a.fullName.localeCompare(b.fullName, 'pt-BR'))
 }
 
@@ -103,15 +132,37 @@ export async function savePassenger(
     ? await database.get('passengers', passengerId)
     : undefined
 
+  const previous = existing ? withPassengerDefaults(existing) : undefined
+  const resolvingReview =
+    previous?.reviewStatus === 'REVIEW' && input.reviewStatus === 'CONFIRMED'
+
   const passenger: Passenger = {
-    id: existing?.id ?? newId('passenger'),
+    id: previous?.id ?? newId('passenger'),
     fullName: input.fullName.trim(),
     normalizedName: normalizeText(input.fullName),
     city: input.city,
     phone: input.phone.trim(),
     travelPeriod: input.travelPeriod,
+    documentNumber: input.documentNumber.trim(),
+    documentType: input.documentType,
+    busType: input.busType,
+    reviewStatus: input.reviewStatus,
+    importWarning: previous?.importWarning ?? '',
+    reviewResolvedAt: resolvingReview
+      ? timestamp
+      : input.reviewStatus === 'REVIEW'
+        ? undefined
+        : previous?.reviewResolvedAt,
+    importSourceKey: previous?.importSourceKey,
+    importSourceFile: previous?.importSourceFile,
+    importSourcePage: previous?.importSourcePage,
+    sourceRole: previous?.sourceRole,
+    importedAt: previous?.importedAt,
+    lastUpdateSourceFile: previous?.lastUpdateSourceFile,
+    lastUpdateSourcePage: previous?.lastUpdateSourcePage,
+    lastUpdatedFromImportAt: previous?.lastUpdatedFromImportAt,
     notes: input.notes.trim(),
-    createdAt: existing?.createdAt ?? timestamp,
+    createdAt: previous?.createdAt ?? timestamp,
     updatedAt: timestamp,
   }
 
@@ -372,11 +423,472 @@ export async function deletePhoto(photoId: string) {
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
-  const report = await getPendenciesReport()
+  const [report, passengers] = await Promise.all([
+    getPendenciesReport(),
+    listPassengers(),
+  ])
   return {
     passengerCount: report.passengerCount,
     luggageCount: report.luggageCount,
     pendingCount: report.activePendencyCount,
+    passengerReviewCount: passengers.filter(
+      (passenger) => passenger.reviewStatus === 'REVIEW',
+    ).length,
+  }
+}
+
+export async function getPassengerImport2026Status(): Promise<PassengerImport2026Status> {
+  const database = await getDatabase()
+  const metadata = await database.get('appMetadata', PASSENGER_IMPORT_2026_METADATA_KEY)
+  return {
+    sourceTotal: PASSENGER_IMPORT_2026_TOTAL,
+    sourceReviewTotal: PASSENGER_IMPORT_2026_REVIEW_TOTAL,
+    completed: Boolean(metadata),
+    completedAt: metadata?.value || undefined,
+  }
+}
+
+export async function importPassengers2026(): Promise<PassengerImport2026Result> {
+  const database = await getDatabase()
+  const transaction = database.transaction(['passengers', 'appMetadata'], 'readwrite')
+  const passengerStore = transaction.objectStore('passengers')
+  const metadataStore = transaction.objectStore('appMetadata')
+  const alreadyCompleted = await metadataStore.get(PASSENGER_IMPORT_2026_METADATA_KEY)
+
+  if (alreadyCompleted) {
+    await transaction.done
+    return {
+      insertedCount: 0,
+      reviewCount: PASSENGER_IMPORT_2026_REVIEW_TOTAL,
+      completedAt: alreadyCompleted.value,
+      alreadyCompleted: true,
+    }
+  }
+
+  const timestamp = now()
+  for (const row of PASSENGER_IMPORT_2026) {
+    const passenger: Passenger = {
+      id: newId('passenger'),
+      fullName: row.fullName,
+      normalizedName: normalizeText(row.fullName),
+      city: row.city,
+      phone: '',
+      travelPeriod: row.travelPeriod,
+      documentNumber: row.documentNumber,
+      documentType: row.documentType,
+      busType: row.busType,
+      reviewStatus: row.reviewStatus,
+      importWarning: row.importWarning,
+      importSourceKey: row.sourceKey,
+      importSourceFile: row.sourceFile,
+      importSourcePage: row.sourcePage,
+      sourceRole: row.sourceRole,
+      importedAt: timestamp,
+      notes: '',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+    await passengerStore.add(passenger)
+  }
+
+  await metadataStore.put({
+    key: PASSENGER_IMPORT_2026_METADATA_KEY,
+    value: timestamp,
+    updatedAt: timestamp,
+  })
+  await transaction.done
+
+  return {
+    insertedCount: PASSENGER_IMPORT_2026_TOTAL,
+    reviewCount: PASSENGER_IMPORT_2026_REVIEW_TOTAL,
+    completedAt: timestamp,
+    alreadyCompleted: false,
+  }
+}
+
+
+function normalizePassengerDocument(value: string) {
+  return normalizeText(value).replace(/[^A-Z0-9]/g, '')
+}
+
+function updateChange(
+  field: PassengerUpdateChange['field'],
+  label: string,
+  previousValue: string,
+  nextValue: string,
+): PassengerUpdateChange {
+  return { field, label, previousValue, nextValue }
+}
+
+function busLabel(value: Passenger['busType']) {
+  if (value === 'DOUBLE_DECKER') return 'Ônibus 2 andares'
+  if (value === 'CONVENTIONAL') return 'Ônibus convencional'
+  return 'Não informado'
+}
+
+function documentTypeLabel(value: Passenger['documentType']) {
+  if (value === 'CPF') return 'CPF'
+  if (value === 'RG') return 'RG'
+  return 'Não identificado'
+}
+
+function periodLabel(value: Passenger['travelPeriod'] | '') {
+  if (value === 'FIRST_WEEK') return 'Primeira semana'
+  if (value === 'SECOND_WEEK') return 'Segunda semana'
+  if (value === 'BOTH_WEEKS') return 'Duas semanas'
+  return 'Não identificado'
+}
+
+function roleLabel(value: Passenger['sourceRole'] | PassengerPdfImportRow['sourceRole']) {
+  return value === 'GUIDE' ? 'Guia' : 'Passageiro'
+}
+
+function appendImportWarning(current: string, warning: string) {
+  const clean = warning.trim()
+  if (!clean) return current
+  if (!current) return clean
+  if (current.includes(clean)) return current
+  return `${current} ${clean}`
+}
+
+function candidateSpecificityScore(passenger: Passenger, row: PassengerPdfImportRow) {
+  let score = 0
+  if (row.city && passenger.city === row.city) score += 4
+  if (row.travelPeriod && passenger.travelPeriod === row.travelPeriod) score += 3
+  if (row.busType !== 'UNSPECIFIED' && passenger.busType === row.busType) score += 2
+  if (passenger.sourceRole === row.sourceRole) score += 1
+  return score
+}
+
+function disambiguateCandidates(candidates: Passenger[], row: PassengerPdfImportRow) {
+  if (candidates.length <= 1) return candidates
+  const scored = candidates.map((passenger) => ({
+    passenger,
+    score: candidateSpecificityScore(passenger, row),
+  }))
+  const bestScore = Math.max(...scored.map((item) => item.score))
+  if (bestScore <= 0) return candidates
+  return scored.filter((item) => item.score === bestScore).map((item) => item.passenger)
+}
+
+function calculatePassengerChanges(passenger: Passenger, row: PassengerPdfImportRow) {
+  const changes: PassengerUpdateChange[] = []
+  if (passenger.fullName.trim() !== row.fullName.trim()) {
+    changes.push(updateChange('fullName', 'Nome', passenger.fullName, row.fullName))
+  }
+
+  const currentDocument = normalizePassengerDocument(passenger.documentNumber)
+  const nextDocument = normalizePassengerDocument(row.documentNumber)
+  if (nextDocument && currentDocument !== nextDocument) {
+    changes.push(
+      updateChange('documentNumber', 'Documento', passenger.documentNumber || 'Não informado', row.documentNumber),
+    )
+  }
+  if (row.documentNumber && passenger.documentType !== row.documentType) {
+    changes.push(
+      updateChange(
+        'documentType',
+        'Tipo de documento',
+        documentTypeLabel(passenger.documentType),
+        documentTypeLabel(row.documentType),
+      ),
+    )
+  }
+  if (row.city && passenger.city !== row.city) {
+    changes.push(updateChange('city', 'Cidade', passenger.city, row.city))
+  }
+  if (row.travelPeriod && passenger.travelPeriod !== row.travelPeriod) {
+    changes.push(
+      updateChange(
+        'travelPeriod',
+        'Período',
+        periodLabel(passenger.travelPeriod),
+        periodLabel(row.travelPeriod),
+      ),
+    )
+  }
+  if (row.busType !== 'UNSPECIFIED' && passenger.busType !== row.busType) {
+    changes.push(
+      updateChange('busType', 'Ônibus', busLabel(passenger.busType), busLabel(row.busType)),
+    )
+  }
+  if ((passenger.sourceRole ?? 'PASSENGER') !== row.sourceRole) {
+    changes.push(
+      updateChange(
+        'sourceRole',
+        'Função',
+        roleLabel(passenger.sourceRole ?? 'PASSENGER'),
+        roleLabel(row.sourceRole),
+      ),
+    )
+  }
+  return changes
+}
+
+function structuralRowProblem(row: PassengerPdfImportRow) {
+  if (!row.fullName.trim()) return 'Nome não identificado no PDF.'
+  if (!row.city) return 'Cidade não identificada no PDF.'
+  if (!row.travelPeriod) return 'Período não identificado no PDF.'
+  return ''
+}
+
+function passengerWasEditedManually(passenger: Passenger) {
+  if (!passenger.importedAt) return true
+  const lastImportTimestamp = passenger.lastUpdatedFromImportAt ?? passenger.importedAt
+  return passenger.updatedAt > lastImportTimestamp
+}
+
+export async function previewPassengerPdfUpdate(
+  rows: PassengerPdfImportRow[],
+  fingerprint: string,
+  fileNames: string[],
+): Promise<PassengerUpdatePreview> {
+  const database = await getDatabase()
+  const [storedPassengers, importedBatch] = await Promise.all([
+    database.getAll('passengers'),
+    database.getFromIndex('passengerImportBatches', 'by-fingerprint', fingerprint),
+  ])
+  const passengers = storedPassengers.map(withPassengerDefaults)
+  const items: PassengerUpdatePreviewItem[] = []
+
+  for (const row of rows) {
+    const structuralProblem = structuralRowProblem(row)
+    if (structuralProblem) {
+      items.push({
+        id: row.rowKey,
+        row,
+        status: 'CONFLICT',
+        candidatePassengerIds: [],
+        changes: [],
+        message: structuralProblem,
+      })
+      continue
+    }
+
+    const rowName = normalizeText(row.fullName)
+    const rowDocument = normalizePassengerDocument(row.documentNumber)
+    const sameName = passengers.filter((passenger) => passenger.normalizedName === rowName)
+    const sameDocument = rowDocument
+      ? passengers.filter(
+          (passenger) => normalizePassengerDocument(passenger.documentNumber) === rowDocument,
+        )
+      : []
+    const sameNameAndDocument = rowDocument
+      ? sameName.filter(
+          (passenger) => normalizePassengerDocument(passenger.documentNumber) === rowDocument,
+        )
+      : []
+
+    let candidates: Passenger[] = []
+    if (sameNameAndDocument.length > 0) {
+      candidates = disambiguateCandidates(sameNameAndDocument, row)
+    } else if (sameName.length > 0 && sameDocument.length > 0) {
+      const conflictingCandidates = Array.from(
+        new Map([...sameName, ...sameDocument].map((passenger) => [passenger.id, passenger])).values(),
+      )
+      items.push({
+        id: row.rowKey,
+        row,
+        status: 'CONFLICT',
+        candidatePassengerIds: conflictingCandidates.map((candidate) => candidate.id),
+        changes: [],
+        message: 'O nome aponta para um cadastro e o documento aponta para outro. Nenhum deles será alterado automaticamente.',
+      })
+      continue
+    } else if (sameName.length > 0) {
+      candidates = disambiguateCandidates(sameName, row)
+    } else if (sameDocument.length > 0) {
+      candidates = disambiguateCandidates(sameDocument, row)
+    }
+
+    if (candidates.length > 1) {
+      items.push({
+        id: row.rowKey,
+        row,
+        status: 'CONFLICT',
+        candidatePassengerIds: candidates.map((candidate) => candidate.id),
+        changes: [],
+        message: 'Há mais de um cadastro possível para esta linha. Nenhum dado será substituído automaticamente.',
+      })
+      continue
+    }
+
+    const matched = candidates[0]
+    if (!matched) {
+      items.push({
+        id: row.rowKey,
+        row,
+        status: 'NEW',
+        candidatePassengerIds: [],
+        changes: [],
+        message: row.parseWarning
+          ? 'Novo passageiro com informação que deverá ser revisada depois da importação.'
+          : 'Novo passageiro identificado na lista.',
+      })
+      continue
+    }
+
+    const changes = calculatePassengerChanges(matched, row)
+    const protectedManualEdit = changes.length > 0 && passengerWasEditedManually(matched)
+    items.push({
+      id: row.rowKey,
+      row,
+      status: protectedManualEdit ? 'CONFLICT' : changes.length > 0 ? 'CHANGED' : 'UNCHANGED',
+      matchedPassengerId: matched.id,
+      candidatePassengerIds: [matched.id],
+      changes: protectedManualEdit ? [] : changes,
+      message: protectedManualEdit
+        ? 'Este cadastro foi criado ou alterado manualmente depois da última importação. A nova lista diverge dele, por isso o aplicativo não substituirá a correção automaticamente.'
+        : changes.length > 0
+          ? `${changes.length} ${changes.length === 1 ? 'informação será atualizada' : 'informações serão atualizadas'}.`
+          : 'Cadastro já está igual à nova lista.',
+    })
+  }
+
+  return {
+    fingerprint,
+    fileNames,
+    analyzedAt: now(),
+    totalRows: items.length,
+    newCount: items.filter((item) => item.status === 'NEW').length,
+    changedCount: items.filter((item) => item.status === 'CHANGED').length,
+    unchangedCount: items.filter((item) => item.status === 'UNCHANGED').length,
+    conflictCount: items.filter((item) => item.status === 'CONFLICT').length,
+    warningCount: items.filter((item) => Boolean(item.row.parseWarning)).length,
+    alreadyImportedAt: importedBatch?.importedAt,
+    items,
+  }
+}
+
+export async function listPassengerImportBatches(): Promise<PassengerImportBatch[]> {
+  const database = await getDatabase()
+  const batches = await database.getAll('passengerImportBatches')
+  return batches.sort((a, b) => b.importedAt.localeCompare(a.importedAt))
+}
+
+export async function applyPassengerPdfUpdate(
+  preview: PassengerUpdatePreview,
+): Promise<PassengerUpdateApplyResult> {
+  const database = await getDatabase()
+  const alreadyImported = await database.getFromIndex(
+    'passengerImportBatches',
+    'by-fingerprint',
+    preview.fingerprint,
+  )
+  if (alreadyImported) {
+    throw new Error('Estes mesmos arquivos já foram aplicados anteriormente. Nenhum cadastro foi duplicado.')
+  }
+
+  const timestamp = now()
+  const transaction = database.transaction(
+    ['passengers', 'passengerImportBatches'],
+    'readwrite',
+  )
+  const passengerStore = transaction.objectStore('passengers')
+  const batchStore = transaction.objectStore('passengerImportBatches')
+  let insertedCount = 0
+  let updatedCount = 0
+
+  for (const item of preview.items) {
+    const row = item.row
+
+    if (item.status === 'NEW') {
+      const passenger: Passenger = {
+        id: newId('passenger'),
+        fullName: row.fullName.trim(),
+        normalizedName: normalizeText(row.fullName),
+        city: row.city,
+        phone: '',
+        travelPeriod: row.travelPeriod || 'FIRST_WEEK',
+        documentNumber: row.documentNumber.trim(),
+        documentType: row.documentType,
+        busType: row.busType,
+        reviewStatus: row.parseWarning ? 'REVIEW' : 'CONFIRMED',
+        importWarning: row.parseWarning,
+        importSourceKey: row.rowKey,
+        importSourceFile: row.sourceFile,
+        importSourcePage: row.sourcePage,
+        sourceRole: row.sourceRole,
+        importedAt: timestamp,
+        notes: '',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }
+      await passengerStore.add(passenger)
+      insertedCount += 1
+      continue
+    }
+
+    if (item.status === 'CHANGED' && item.matchedPassengerId) {
+      const stored = await passengerStore.get(item.matchedPassengerId)
+      if (!stored) continue
+      const passenger = withPassengerDefaults(stored)
+      const updated: Passenger = {
+        ...passenger,
+        fullName: row.fullName.trim(),
+        normalizedName: normalizeText(row.fullName),
+        city: row.city || passenger.city,
+        travelPeriod: row.travelPeriod || passenger.travelPeriod,
+        documentNumber: row.documentNumber.trim() || passenger.documentNumber,
+        documentType: row.documentNumber ? row.documentType : passenger.documentType,
+        busType: row.busType === 'UNSPECIFIED' ? passenger.busType : row.busType,
+        sourceRole: row.sourceRole,
+        reviewStatus: row.parseWarning ? 'REVIEW' : passenger.reviewStatus,
+        reviewResolvedAt: row.parseWarning ? undefined : passenger.reviewResolvedAt,
+        importWarning: appendImportWarning(passenger.importWarning, row.parseWarning),
+        lastUpdateSourceFile: row.sourceFile,
+        lastUpdateSourcePage: row.sourcePage,
+        lastUpdatedFromImportAt: timestamp,
+        updatedAt: timestamp,
+      }
+      await passengerStore.put(updated)
+      updatedCount += 1
+      continue
+    }
+
+    if (item.status === 'CONFLICT' && item.candidatePassengerIds.length > 0) {
+      const warning = `Conflito encontrado na atualização ${row.sourceFile}, pág. ${row.sourcePage}: ${item.message}`
+      for (const candidateId of item.candidatePassengerIds) {
+        const stored = await passengerStore.get(candidateId)
+        if (!stored) continue
+        const passenger = withPassengerDefaults(stored)
+        await passengerStore.put({
+          ...passenger,
+          reviewStatus: 'REVIEW',
+          reviewResolvedAt: undefined,
+          importWarning: appendImportWarning(passenger.importWarning, warning),
+          lastUpdateSourceFile: row.sourceFile,
+          lastUpdateSourcePage: row.sourcePage,
+          lastUpdatedFromImportAt: timestamp,
+          updatedAt: timestamp,
+        })
+      }
+    }
+  }
+
+  const batch: PassengerImportBatch = {
+    id: newId('passenger_import_batch'),
+    fingerprint: preview.fingerprint,
+    fileNames: preview.fileNames,
+    importedAt: timestamp,
+    totalRows: preview.totalRows,
+    newCount: preview.newCount,
+    updatedCount,
+    unchangedCount: preview.unchangedCount,
+    conflictCount: preview.conflictCount,
+    warningCount: preview.warningCount,
+    conflictNotes: preview.items
+      .filter((item) => item.status === 'CONFLICT')
+      .map((item) => `${item.row.fullName || 'Linha não identificada'} (${item.row.sourceFile}, pág. ${item.row.sourcePage}): ${item.message}`),
+  }
+  await batchStore.add(batch)
+  await transaction.done
+
+  return {
+    batch,
+    insertedCount,
+    updatedCount,
+    conflictCount: preview.conflictCount,
   }
 }
 

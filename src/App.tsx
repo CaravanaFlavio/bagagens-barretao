@@ -98,7 +98,7 @@ function App() {
                 title="Configurações"
                 subtitle="Cidades, cores, siglas e setores da carreta."
                 icon={<Settings aria-hidden="true" />}
-                nextPhase="As 17 cidades já estão disponíveis no cadastro. A próxima configuração será o mapa de cores e setores."
+                nextPhase="As cidades da lista atual já estão disponíveis no cadastro. A próxima configuração será o mapa de cores e setores."
                 checklist={[
                   'Editar cidades e siglas',
                   'Vincular cores dos lacres',

@@ -1,11 +1,15 @@
 import {
+  AlertTriangle,
   Barcode,
   BriefcaseBusiness,
+  CheckCircle2,
+  Database,
   Camera,
   ChevronDown,
   Clock3,
   Edit3,
   Eye,
+  FileClock,
   History,
   ImageOff,
   LoaderCircle,
@@ -13,12 +17,14 @@ import {
   PackagePlus,
   Phone,
   Plus,
+  Printer,
+  RefreshCcw,
   Search,
   Trash2,
   UserRound,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { BarcodeScannerModal } from '../components/BarcodeScannerModal'
 import { Modal } from '../components/Modal'
 import { PhotoCaptureButtons } from '../components/PhotoCaptureButtons'
@@ -30,11 +36,16 @@ import {
   deleteLuggagePermanently,
   deletePassengerPermanently,
   deletePhoto,
+  getPassengerImport2026Status,
   getPassengerSetPhoto,
   getPhotosByIds,
   listLuggageByPassenger,
   listLuggageMovements,
   listLuggagePhotosByPassenger,
+  importPassengers2026,
+  applyPassengerPdfUpdate,
+  listPassengerImportBatches,
+  previewPassengerPdfUpdate,
   listPassengers,
   saveLuggagePhoto,
   savePassenger,
@@ -46,19 +57,59 @@ import type {
   LuggageInput,
   LuggageMovement,
   LuggageStage,
+  PassengerImport2026Status,
+  PassengerImportBatch,
   PassengerInput,
+  PassengerUpdatePreview,
+  PassengerUpdateStatus,
   PassengerSummary,
   PhotoRecord,
   TravelPeriod,
 } from '../domain/types'
 import { compressPhoto } from '../utils/imageCompression'
+import { parsePassengerUpdatePdfs } from '../utils/passengerPdfImport'
 
 const emptyPassengerForm: PassengerInput = {
   fullName: '',
   city: '',
   phone: '',
   travelPeriod: 'FIRST_WEEK',
+  documentNumber: '',
+  documentType: 'UNKNOWN',
+  busType: 'UNSPECIFIED',
+  reviewStatus: 'CONFIRMED',
   notes: '',
+}
+
+const DOCUMENT_TYPE_LABELS = {
+  CPF: 'CPF',
+  RG: 'RG',
+  UNKNOWN: 'Não identificado',
+} as const
+
+const BUS_TYPE_LABELS = {
+  DOUBLE_DECKER: 'Ônibus 2 andares',
+  CONVENTIONAL: 'Ônibus convencional',
+  UNSPECIFIED: 'Ônibus não informado',
+} as const
+
+const PRINT_PERIOD_ORDER: TravelPeriod[] = [
+  'FIRST_WEEK',
+  'SECOND_WEEK',
+  'BOTH_WEEKS',
+]
+
+const PRINT_BUS_ORDER: PassengerSummary['busType'][] = [
+  'DOUBLE_DECKER',
+  'CONVENTIONAL',
+  'UNSPECIFIED',
+]
+
+const UPDATE_STATUS_LABELS: Record<PassengerUpdateStatus, string> = {
+  NEW: 'Novo',
+  CHANGED: 'Alterado',
+  UNCHANGED: 'Sem mudança',
+  CONFLICT: 'Conflito',
 }
 
 const emptyLuggageForm: Omit<LuggageInput, 'passengerId'> = {
@@ -100,6 +151,14 @@ function formatFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function fileNamePart(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
 export function PassengersPage() {
   const [passengers, setPassengers] = useState<PassengerSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -107,6 +166,19 @@ export function PassengersPage() {
   const [query, setQuery] = useState('')
   const [cityFilter, setCityFilter] = useState('')
   const [periodFilter, setPeriodFilter] = useState<TravelPeriod | ''>('')
+  const [reviewOnly, setReviewOnly] = useState(
+    () => new URLSearchParams(window.location.search).get('revisar') === '1',
+  )
+  const [importStatus, setImportStatus] = useState<PassengerImport2026Status | null>(null)
+  const [importingPassengers, setImportingPassengers] = useState(false)
+  const [importFeedback, setImportFeedback] = useState('')
+  const [importBatches, setImportBatches] = useState<PassengerImportBatch[]>([])
+  const [importHistoryOpen, setImportHistoryOpen] = useState(false)
+  const [updatePreview, setUpdatePreview] = useState<PassengerUpdatePreview | null>(null)
+  const [updateFilter, setUpdateFilter] = useState<PassengerUpdateStatus | 'ALL'>('ALL')
+  const [parsingUpdate, setParsingUpdate] = useState(false)
+  const [applyingUpdate, setApplyingUpdate] = useState(false)
+  const [updateError, setUpdateError] = useState('')
 
   const [passengerModalOpen, setPassengerModalOpen] = useState(false)
   const [editingPassenger, setEditingPassenger] = useState<PassengerSummary | null>(null)
@@ -138,8 +210,14 @@ export function PassengersPage() {
   const loadPassengers = useCallback(async () => {
     try {
       setPageError('')
-      const result = await listPassengers()
+      const [result, currentImportStatus, batches] = await Promise.all([
+        listPassengers(),
+        getPassengerImport2026Status(),
+        listPassengerImportBatches(),
+      ])
       setPassengers(result)
+      setImportStatus(currentImportStatus)
+      setImportBatches(batches)
     } catch (error) {
       setPageError(error instanceof Error ? error.message : 'Não foi possível carregar os passageiros.')
     } finally {
@@ -200,16 +278,82 @@ export function PassengersPage() {
       .trim()
       .toLocaleUpperCase('pt-BR')
 
+    const queryDigits = normalizedQuery.replace(/\D/g, '')
+    const queryDocument = normalizedQuery.replace(/[^A-Z0-9]/g, '')
+
     return passengers.filter((passenger) => {
+      const documentSearch = passenger.documentNumber
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .toLocaleUpperCase('pt-BR')
+        .replace(/[^A-Z0-9]/g, '')
       const matchesQuery =
         !normalizedQuery ||
         passenger.normalizedName.includes(normalizedQuery) ||
-        passenger.phone.replace(/\D/g, '').includes(normalizedQuery.replace(/\D/g, ''))
+        (queryDigits.length > 0 && passenger.phone.replace(/\D/g, '').includes(queryDigits)) ||
+        (queryDocument.length > 0 && documentSearch.includes(queryDocument))
       const matchesCity = !cityFilter || passenger.city === cityFilter
       const matchesPeriod = !periodFilter || passenger.travelPeriod === periodFilter
-      return matchesQuery && matchesCity && matchesPeriod
+      const matchesReview = !reviewOnly || passenger.reviewStatus === 'REVIEW'
+      return matchesQuery && matchesCity && matchesPeriod && matchesReview
     })
-  }, [cityFilter, passengers, periodFilter, query])
+  }, [cityFilter, passengers, periodFilter, query, reviewOnly])
+
+  const reviewCount = useMemo(
+    () => passengers.filter((passenger) => passenger.reviewStatus === 'REVIEW').length,
+    [passengers],
+  )
+
+  const printSummary = useMemo(() => ({
+    firstWeek: filteredPassengers.filter((passenger) => passenger.travelPeriod === 'FIRST_WEEK').length,
+    secondWeek: filteredPassengers.filter((passenger) => passenger.travelPeriod === 'SECOND_WEEK').length,
+    bothWeeks: filteredPassengers.filter((passenger) => passenger.travelPeriod === 'BOTH_WEEKS').length,
+    review: filteredPassengers.filter((passenger) => passenger.reviewStatus === 'REVIEW').length,
+  }), [filteredPassengers])
+
+  const printGroups = useMemo(
+    () =>
+      PRINT_PERIOD_ORDER.map((travelPeriod) => {
+        const periodPassengers = filteredPassengers.filter(
+          (passenger) => passenger.travelPeriod === travelPeriod,
+        )
+
+        const buses = PRINT_BUS_ORDER.map((busType) => {
+          const busPassengers = periodPassengers.filter(
+            (passenger) => passenger.busType === busType,
+          )
+          const cities = Array.from(
+            new Set(busPassengers.map((passenger) => passenger.city)),
+          )
+            .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+            .map((city) => ({
+              city,
+              passengers: busPassengers
+                .filter((passenger) => passenger.city === city)
+                .sort((a, b) => a.fullName.localeCompare(b.fullName, 'pt-BR')),
+            }))
+
+          return {
+            busType,
+            count: busPassengers.length,
+            cities,
+          }
+        }).filter((group) => group.count > 0)
+
+        return {
+          travelPeriod,
+          count: periodPassengers.length,
+          buses,
+        }
+      }).filter((group) => group.count > 0),
+    [filteredPassengers],
+  )
+
+  const visibleUpdateItems = useMemo(() => {
+    if (!updatePreview) return []
+    if (updateFilter === 'ALL') return updatePreview.items
+    return updatePreview.items.filter((item) => item.status === updateFilter)
+  }, [updateFilter, updatePreview])
 
   const openNewPassenger = () => {
     setEditingPassenger(null)
@@ -225,6 +369,27 @@ export function PassengersPage() {
       city: passenger.city,
       phone: passenger.phone,
       travelPeriod: passenger.travelPeriod,
+      documentNumber: passenger.documentNumber,
+      documentType: passenger.documentType,
+      busType: passenger.busType,
+      reviewStatus: passenger.reviewStatus,
+      notes: passenger.notes,
+    })
+    setPassengerFormError('')
+    setPassengerModalOpen(true)
+  }
+
+  const openReviewPassenger = (passenger: PassengerSummary) => {
+    setEditingPassenger(passenger)
+    setPassengerForm({
+      fullName: passenger.fullName,
+      city: passenger.city,
+      phone: passenger.phone,
+      travelPeriod: passenger.travelPeriod,
+      documentNumber: passenger.documentNumber,
+      documentType: passenger.documentType,
+      busType: passenger.busType,
+      reviewStatus: 'CONFIRMED',
       notes: passenger.notes,
     })
     setPassengerFormError('')
@@ -253,6 +418,119 @@ export function PassengersPage() {
     } finally {
       setSavingPassenger(false)
     }
+  }
+
+  const handleImportPassengers = async () => {
+    const confirmed = window.confirm(
+      'Importar a lista provisória de 2026? Os passageiros que já existem no aplicativo serão preservados. A lista será adicionada uma única vez e os registros duvidosos ficarão marcados para revisão.',
+    )
+    if (!confirmed) return
+
+    try {
+      setImportingPassengers(true)
+      setImportFeedback('')
+      const result = await importPassengers2026()
+      setImportFeedback(
+        result.alreadyCompleted
+          ? 'A lista provisória de 2026 já havia sido importada neste aparelho.'
+          : `${result.insertedCount} registros importados. ${result.reviewCount} ficaram marcados para revisão.`,
+      )
+      await loadPassengers()
+    } catch (error) {
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível importar a lista provisória de passageiros.',
+      )
+    } finally {
+      setImportingPassengers(false)
+    }
+  }
+
+
+  const handleUpdateFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.currentTarget.files ?? []) as File[]
+    event.currentTarget.value = ''
+    if (files.length === 0) return
+
+    try {
+      setParsingUpdate(true)
+      setUpdateError('')
+      setImportFeedback('')
+      const parsed = await parsePassengerUpdatePdfs(files)
+      const preview = await previewPassengerPdfUpdate(
+        parsed.rows,
+        parsed.fingerprint,
+        parsed.fileNames,
+      )
+      setUpdateFilter('ALL')
+      setUpdatePreview(preview)
+    } catch (error) {
+      setUpdateError(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível interpretar a atualização em PDF.',
+      )
+    } finally {
+      setParsingUpdate(false)
+    }
+  }
+
+  const handleApplyUpdate = async () => {
+    if (!updatePreview || updatePreview.alreadyImportedAt) return
+    const confirmed = window.confirm(
+      `Confirmar esta atualização? ${updatePreview.newCount} novos cadastros serão incluídos e ${updatePreview.changedCount} cadastros serão atualizados. Conflitos não terão dados substituídos automaticamente.`,
+    )
+    if (!confirmed) return
+
+    try {
+      setApplyingUpdate(true)
+      setUpdateError('')
+      const result = await applyPassengerPdfUpdate(updatePreview)
+      setImportFeedback(
+        `Atualização aplicada: ${result.insertedCount} novos, ${result.updatedCount} alterados e ${result.conflictCount} conflitos encaminhados para revisão.`,
+      )
+      setUpdatePreview(null)
+      await loadPassengers()
+    } catch (error) {
+      setUpdateError(
+        error instanceof Error ? error.message : 'Não foi possível aplicar a atualização.',
+      )
+    } finally {
+      setApplyingUpdate(false)
+    }
+  }
+
+  const handlePrintPassengers = () => {
+    if (filteredPassengers.length === 0) return
+
+    const previousTitle = document.title
+    const nameParts = ['Lista', 'Passageiros', 'Barretao', '2026']
+
+    if (periodFilter) {
+      nameParts.push(fileNamePart(TRAVEL_PERIOD_LABELS[periodFilter]))
+    }
+    if (cityFilter) {
+      nameParts.push(fileNamePart(cityFilter))
+    }
+    if (reviewOnly) {
+      nameParts.push('Revisar')
+    }
+    if (query.trim()) {
+      nameParts.push('Filtrada')
+    }
+    if (!periodFilter && !cityFilter && !reviewOnly && !query.trim()) {
+      nameParts.push('Completa')
+    }
+
+    document.title = nameParts.filter(Boolean).join('_')
+
+    const restoreTitle = () => {
+      document.title = previousTitle
+      window.removeEventListener('afterprint', restoreTitle)
+    }
+    window.addEventListener('afterprint', restoreTitle)
+    window.print()
   }
 
   const handleDeletePassenger = async () => {
@@ -431,11 +709,93 @@ export function PassengersPage() {
           <h2>Passageiros</h2>
           <p>Cadastre as pessoas antes das bagagens chegarem ao galpão.</p>
         </div>
-        <button type="button" className="primary-button" onClick={openNewPassenger}>
-          <Plus aria-hidden="true" />
-          Novo passageiro
-        </button>
+        <div className="page-title-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={handlePrintPassengers}
+            disabled={filteredPassengers.length === 0}
+          >
+            <Printer aria-hidden="true" />
+            Imprimir lista
+          </button>
+          <button type="button" className="primary-button" onClick={openNewPassenger}>
+            <Plus aria-hidden="true" />
+            Novo passageiro
+          </button>
+        </div>
       </section>
+
+      {importStatus ? (
+        <section className={`passenger-import-card ${importStatus.completed ? 'is-complete' : 'is-pending'}`}>
+          <div className="passenger-import-card__icon">
+            {importStatus.completed ? <CheckCircle2 aria-hidden="true" /> : <Database aria-hidden="true" />}
+          </div>
+          <div className="passenger-import-card__content">
+            <p className="eyebrow">Lista provisória 2026</p>
+            <h3>{importStatus.completed ? 'Lista inicial já importada' : 'Importar passageiros recebidos da equipe'}</h3>
+            <p>
+              {importStatus.completed
+                ? `${importStatus.sourceTotal} registros foram incorporados ao aplicativo. As correções agora podem ser feitas diretamente no cadastro.`
+                : `${importStatus.sourceTotal} registros serão adicionados sem excluir os cadastros atuais. ${importStatus.sourceReviewTotal} já estão sinalizados para conferência.`}
+            </p>
+            {importStatus.completedAt ? (
+              <small>Importação concluída em {formatDateTime(importStatus.completedAt)}.</small>
+            ) : null}
+            {importFeedback ? <strong className="passenger-import-feedback">{importFeedback}</strong> : null}
+          </div>
+          {!importStatus.completed ? (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void handleImportPassengers()}
+              disabled={importingPassengers}
+            >
+              {importingPassengers ? <LoaderCircle className="spin" aria-hidden="true" /> : <Database aria-hidden="true" />}
+              Importar {importStatus.sourceTotal} registros
+            </button>
+          ) : (
+            <div className="passenger-import-actions">
+              <label className={`secondary-button passenger-update-file-button ${parsingUpdate ? 'is-busy' : ''}`}>
+                {parsingUpdate ? <LoaderCircle className="spin" aria-hidden="true" /> : <RefreshCcw aria-hidden="true" />}
+                {parsingUpdate ? 'Lendo PDF...' : 'Importar atualização PDF'}
+                <input
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  multiple
+                  disabled={parsingUpdate}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => void handleUpdateFiles(event)}
+                />
+              </label>
+              <button type="button" className="secondary-button" onClick={() => setImportHistoryOpen(true)}>
+                <FileClock aria-hidden="true" />
+                Histórico {importBatches.length > 0 ? `(${importBatches.length})` : ''}
+              </button>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {updateError && !updatePreview ? <div className="alert alert--danger">{updateError}</div> : null}
+
+      {reviewCount > 0 ? (
+        <section className="passenger-review-alert">
+          <div className="passenger-review-alert__icon"><AlertTriangle aria-hidden="true" /></div>
+          <div>
+            <p className="eyebrow">Passageiros → Revisar cadastros</p>
+            <h3>{reviewCount} {reviewCount === 1 ? 'cadastro precisa' : 'cadastros precisam'} de conferência</h3>
+            <p>Duplicidades, documentos incompletos ou outras divergências da lista provisória ficam reunidas aqui até serem confirmadas.</p>
+          </div>
+          <button
+            type="button"
+            className={reviewOnly ? 'secondary-button' : 'primary-button'}
+            onClick={() => setReviewOnly((current) => !current)}
+          >
+            {reviewOnly ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}
+            {reviewOnly ? 'Ver todos os passageiros' : 'Revisar cadastros'}
+          </button>
+        </section>
+      ) : null}
 
       <section className="filter-card">
         <label className="search-field">
@@ -443,7 +803,7 @@ export function PassengersPage() {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Pesquisar nome ou telefone"
+            placeholder="Pesquisar nome, documento ou telefone"
           />
           {query ? (
             <button type="button" onClick={() => setQuery('')} aria-label="Limpar pesquisa">
@@ -481,6 +841,7 @@ export function PassengersPage() {
       <div className="list-summary">
         <strong>{filteredPassengers.length}</strong>
         <span>{filteredPassengers.length === 1 ? 'passageiro encontrado' : 'passageiros encontrados'}</span>
+        {reviewOnly ? <em>Mostrando somente cadastros para revisar</em> : null}
       </div>
 
       {pageError ? <div className="alert alert--danger">{pageError}</div> : null}
@@ -503,7 +864,7 @@ export function PassengersPage() {
       ) : (
         <section className="passenger-grid">
           {filteredPassengers.map((passenger) => (
-            <article className="passenger-card" key={passenger.id}>
+            <article className={`passenger-card ${passenger.reviewStatus === 'REVIEW' ? 'has-review' : ''}`} key={passenger.id}>
               <div className="passenger-card__header">
                 <div className="passenger-avatar" aria-hidden="true">
                   {passenger.fullName.slice(0, 1).toLocaleUpperCase('pt-BR')}
@@ -515,11 +876,29 @@ export function PassengersPage() {
                     <span className={`period-badge period-${passenger.travelPeriod.toLowerCase()}`}>
                       {TRAVEL_PERIOD_LABELS[passenger.travelPeriod]}
                     </span>
+                    {passenger.sourceRole === 'GUIDE' ? (
+                      <span className="passenger-role-badge">GUIA</span>
+                    ) : null}
+                    {passenger.reviewStatus === 'REVIEW' ? (
+                      <span className="passenger-review-badge"><AlertTriangle aria-hidden="true" /> Revisar cadastro</span>
+                    ) : null}
                   </div>
                 </div>
               </div>
 
               <div className="passenger-card__body">
+                <div className="passenger-detail">
+                  <Barcode aria-hidden="true" />
+                  <span>
+                    {passenger.documentNumber
+                      ? `${DOCUMENT_TYPE_LABELS[passenger.documentType]}: ${passenger.documentNumber}`
+                      : 'Documento não informado'}
+                  </span>
+                </div>
+                <div className="passenger-detail">
+                  <BriefcaseBusiness aria-hidden="true" />
+                  <span>{BUS_TYPE_LABELS[passenger.busType]}</span>
+                </div>
                 <div className="passenger-detail">
                   <Phone aria-hidden="true" />
                   <span>{passenger.phone || 'Telefone não informado'}</span>
@@ -556,6 +935,35 @@ export function PassengersPage() {
                   </button>
                 ) : null}
 
+                {passenger.importWarning ? (
+                  <div className={`passenger-import-warning ${passenger.reviewStatus === 'REVIEW' ? 'is-open' : 'is-resolved'}`}>
+                    {passenger.reviewStatus === 'REVIEW' ? <AlertTriangle aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+                    <div>
+                      <strong>{passenger.reviewStatus === 'REVIEW' ? 'Alerta da lista original' : 'Alerta revisado'}</strong>
+                      <p>{passenger.importWarning}</p>
+                    </div>
+                  </div>
+                ) : null}
+                {passenger.reviewStatus === 'REVIEW' ? (
+                  <button
+                    type="button"
+                    className="passenger-review-confirm-button"
+                    onClick={() => openReviewPassenger(passenger)}
+                  >
+                    <CheckCircle2 aria-hidden="true" />
+                    Revisar e confirmar cadastro
+                  </button>
+                ) : null}
+                {passenger.importSourceFile ? (
+                  <small className="passenger-import-source">
+                    Origem: {passenger.importSourceFile}{passenger.importSourcePage ? ` • pág. ${passenger.importSourcePage}` : ''}
+                  </small>
+                ) : null}
+                {passenger.lastUpdateSourceFile ? (
+                  <small className="passenger-import-source">
+                    Última atualização: {passenger.lastUpdateSourceFile}{passenger.lastUpdateSourcePage ? ` • pág. ${passenger.lastUpdateSourcePage}` : ''}
+                  </small>
+                ) : null}
                 {passenger.notes ? <p className="passenger-notes">{passenger.notes}</p> : null}
               </div>
 
@@ -577,6 +985,278 @@ export function PassengersPage() {
           ))}
         </section>
       )}
+
+
+      <section className="passenger-print-report" aria-hidden="true">
+        <header className="passenger-print-report__header">
+          <div>
+            <p>Caravana Flávio Gonçalves • Controle de passageiros</p>
+            <h1>Lista de passageiros • Barretão 2026</h1>
+            <span>
+              {cityFilter || 'Todas as cidades'} • {periodFilter ? TRAVEL_PERIOD_LABELS[periodFilter] : 'Todos os períodos'}
+              {reviewOnly ? ' • Somente cadastros para revisar' : ''}
+              {query.trim() ? ` • Pesquisa: ${query.trim()}` : ''}
+            </span>
+          </div>
+          <div>
+            <strong>{filteredPassengers.length}</strong>
+            <span>{filteredPassengers.length === 1 ? 'passageiro exibido' : 'passageiros exibidos'}</span>
+            <small>Emitida em {new Date().toLocaleString('pt-BR')}</small>
+          </div>
+        </header>
+
+        <div className="passenger-print-summary">
+          <div>
+            <span>1ª semana</span>
+            <strong>{printSummary.firstWeek}</strong>
+          </div>
+          <div>
+            <span>2ª semana</span>
+            <strong>{printSummary.secondWeek}</strong>
+          </div>
+          <div>
+            <span>Duas semanas</span>
+            <strong>{printSummary.bothWeeks}</strong>
+          </div>
+          <div>
+            <span>Para revisar</span>
+            <strong>{printSummary.review}</strong>
+          </div>
+          <div>
+            <span>Total exibido</span>
+            <strong>{filteredPassengers.length}</strong>
+          </div>
+        </div>
+
+        {printGroups.map((periodGroup, periodIndex) => (
+          <section
+            className={`passenger-print-week ${periodIndex > 0 ? 'print-page-break-before' : ''}`}
+            key={`print-period-${periodGroup.travelPeriod}`}
+          >
+            <header className="passenger-print-week__header">
+              <div>
+                <span>Período</span>
+                <h2>{TRAVEL_PERIOD_LABELS[periodGroup.travelPeriod]}</h2>
+              </div>
+              <strong>{periodGroup.count} {periodGroup.count === 1 ? 'passageiro' : 'passageiros'}</strong>
+            </header>
+
+            {periodGroup.buses.map((busGroup) => (
+              <section className="passenger-print-bus" key={`print-bus-${periodGroup.travelPeriod}-${busGroup.busType}`}>
+                <header className="passenger-print-bus__header">
+                  <h3>{BUS_TYPE_LABELS[busGroup.busType]}</h3>
+                  <strong>{busGroup.count} {busGroup.count === 1 ? 'passageiro' : 'passageiros'}</strong>
+                </header>
+
+                {busGroup.cities.map((cityGroup) => (
+                  <section
+                    className="passenger-print-city"
+                    key={`print-city-${periodGroup.travelPeriod}-${busGroup.busType}-${cityGroup.city}`}
+                  >
+                    <header className="passenger-print-city__header">
+                      <h4>{cityGroup.city}</h4>
+                      <span>{cityGroup.passengers.length} {cityGroup.passengers.length === 1 ? 'passageiro' : 'passageiros'}</span>
+                    </header>
+
+                    <table className="passenger-print-table">
+                      <thead>
+                        <tr>
+                          <th>Nº</th>
+                          <th>Nome</th>
+                          <th>Documento</th>
+                          <th>Telefone</th>
+                          <th>Cadastro</th>
+                          <th>Observação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cityGroup.passengers.map((passenger, index) => (
+                          <tr key={`print-${passenger.id}`}>
+                            <td>{index + 1}</td>
+                            <td>{passenger.fullName}</td>
+                            <td>
+                              {passenger.documentNumber
+                                ? `${DOCUMENT_TYPE_LABELS[passenger.documentType]}: ${passenger.documentNumber}`
+                                : 'Não informado'}
+                            </td>
+                            <td>{passenger.phone || 'Não informado'}</td>
+                            <td className={passenger.reviewStatus === 'REVIEW' ? 'passenger-print-review' : undefined}>
+                              {passenger.reviewStatus === 'REVIEW' ? '⚠ REVISAR' : 'Confirmado'}
+                            </td>
+                            <td>
+                              {[passenger.notes, passenger.importWarning ? `Alerta: ${passenger.importWarning}` : '']
+                                .filter(Boolean)
+                                .join(' | ') || '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </section>
+                ))}
+              </section>
+            ))}
+          </section>
+        ))}
+      </section>
+
+      <Modal
+        open={Boolean(updatePreview)}
+        title="Revisar atualização da lista"
+        subtitle="O PDF é comparado com a base atual antes de qualquer gravação."
+        onClose={() => {
+          if (applyingUpdate) return
+          setUpdatePreview(null)
+          setUpdateError('')
+        }}
+        size="large"
+      >
+        {updatePreview ? (
+          <div className="passenger-update-preview">
+            {updatePreview.alreadyImportedAt ? (
+              <div className="alert alert--danger">
+                <AlertTriangle aria-hidden="true" />
+                <div>
+                  <strong>Estes arquivos já foram aplicados</strong>
+                  <p>Importação registrada em {formatDateTime(updatePreview.alreadyImportedAt)}. Nenhum dado será duplicado.</p>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="passenger-update-summary">
+              <button type="button" className={updateFilter === 'NEW' ? 'is-active tone-green' : 'tone-green'} onClick={() => setUpdateFilter('NEW')}>
+                <span>Novos</span><strong>{updatePreview.newCount}</strong>
+              </button>
+              <button type="button" className={updateFilter === 'CHANGED' ? 'is-active tone-blue' : 'tone-blue'} onClick={() => setUpdateFilter('CHANGED')}>
+                <span>Alterados</span><strong>{updatePreview.changedCount}</strong>
+              </button>
+              <button type="button" className={updateFilter === 'UNCHANGED' ? 'is-active' : undefined} onClick={() => setUpdateFilter('UNCHANGED')}>
+                <span>Sem mudança</span><strong>{updatePreview.unchangedCount}</strong>
+              </button>
+              <button type="button" className={updateFilter === 'CONFLICT' ? 'is-active tone-amber' : 'tone-amber'} onClick={() => setUpdateFilter('CONFLICT')}>
+                <span>Conflitos</span><strong>{updatePreview.conflictCount}</strong>
+              </button>
+            </div>
+
+            <div className="passenger-update-toolbar">
+              <div>
+                <strong>{updatePreview.totalRows} linhas interpretadas</strong>
+                <span>{updatePreview.fileNames.join(' • ')}</span>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setUpdateFilter('ALL')}>
+                Ver todos ({updatePreview.totalRows})
+              </button>
+            </div>
+
+            <div className="passenger-update-list">
+              {visibleUpdateItems.map((item) => (
+                <article className={`passenger-update-item status-${item.status.toLowerCase()}`} key={item.id}>
+                  <div className="passenger-update-item__heading">
+                    <div>
+                      <span className={`passenger-update-status status-${item.status.toLowerCase()}`}>{UPDATE_STATUS_LABELS[item.status]}</span>
+                      <h3>{item.row.fullName}</h3>
+                      <p>
+                        {item.row.documentNumber || 'Documento não informado'} • {item.row.city || 'Cidade não identificada'} • {item.row.travelPeriod ? TRAVEL_PERIOD_LABELS[item.row.travelPeriod] : 'Período não identificado'} • {BUS_TYPE_LABELS[item.row.busType]}
+                      </p>
+                    </div>
+                    <small>{item.row.sourceFile} • pág. {item.row.sourcePage}</small>
+                  </div>
+
+                  {item.changes.length > 0 ? (
+                    <div className="passenger-update-changes">
+                      {item.changes.map((change) => (
+                        <div key={`${item.id}-${change.field}`}>
+                          <strong>{change.label}</strong>
+                          <span>{change.previousValue}</span>
+                          <b>→</b>
+                          <em>{change.nextValue}</em>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {item.status === 'CONFLICT' ? (
+                    <div className="passenger-update-message is-warning">
+                      <AlertTriangle aria-hidden="true" />
+                      <span>{item.message} {item.candidatePassengerIds.length > 0 ? 'Os cadastros possíveis serão enviados para “Revisar cadastros”.' : 'Esta linha não será gravada automaticamente.'}</span>
+                    </div>
+                  ) : null}
+
+                  {item.row.parseWarning ? (
+                    <div className="passenger-update-message is-warning">
+                      <AlertTriangle aria-hidden="true" />
+                      <span>{item.row.parseWarning}</span>
+                    </div>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+
+            {updateError ? <div className="alert alert--danger">{updateError}</div> : null}
+
+            <div className="passenger-update-rules">
+              <CheckCircle2 aria-hidden="true" />
+              <p><strong>Proteção da atualização:</strong> novos registros são incluídos, alterações exibidas acima são aplicadas, passageiros ausentes no novo PDF não são excluídos e conflitos nunca substituem dados automaticamente.</p>
+            </div>
+
+            <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={() => setUpdatePreview(null)} disabled={applyingUpdate}>Cancelar</button>
+              <button type="button" className="primary-button" onClick={() => void handleApplyUpdate()} disabled={applyingUpdate || Boolean(updatePreview.alreadyImportedAt)}>
+                {applyingUpdate ? <LoaderCircle className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+                Confirmar atualização
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={importHistoryOpen}
+        title="Histórico das listas importadas"
+        subtitle="Registro das atualizações aplicadas neste aparelho."
+        onClose={() => setImportHistoryOpen(false)}
+        size="large"
+      >
+        <div className="passenger-import-history">
+          {importStatus?.completed ? (
+            <article className="passenger-import-history-item is-initial">
+              <div><Database aria-hidden="true" /></div>
+              <section>
+                <strong>Lista inicial provisória 2026</strong>
+                <span>{importStatus.sourceTotal} registros • {importStatus.sourceReviewTotal} sinalizados inicialmente para revisão</span>
+                <time>{importStatus.completedAt ? formatDateTime(importStatus.completedAt) : ''}</time>
+              </section>
+            </article>
+          ) : null}
+
+          {importBatches.length === 0 ? (
+            <div className="mini-empty-state">
+              <FileClock aria-hidden="true" />
+              <p>Nenhuma atualização em PDF foi aplicada depois da lista inicial.</p>
+            </div>
+          ) : (
+            importBatches.map((batch, index) => (
+              <article className="passenger-import-history-item" key={batch.id}>
+                <div><RefreshCcw aria-hidden="true" /></div>
+                <section>
+                  <strong>Atualização {importBatches.length - index}</strong>
+                  <span>{batch.fileNames.join(' • ')}</span>
+                  <p>
+                    +{batch.newCount} novos • {batch.updatedCount} alterados • {batch.unchangedCount} sem mudança • {batch.conflictCount} conflitos
+                  </p>
+                  {batch.conflictNotes.length > 0 ? (
+                    <details className="passenger-import-history-conflicts">
+                      <summary>Ver conflitos registrados</summary>
+                      {batch.conflictNotes.map((note) => <span key={note}>{note}</span>)}
+                    </details>
+                  ) : null}
+                  <time>{formatDateTime(batch.importedAt)}</time>
+                </section>
+              </article>
+            ))
+          )}
+        </div>
+      </Modal>
 
       <Modal
         open={passengerModalOpen}
@@ -617,6 +1297,82 @@ export function PassengersPage() {
               />
             </label>
           </div>
+
+          <div className="form-grid">
+            <label className="field">
+              <span>Tipo de documento</span>
+              <select
+                value={passengerForm.documentType}
+                onChange={(event) => setPassengerForm((current) => ({
+                  ...current,
+                  documentType: event.target.value as PassengerInput['documentType'],
+                }))}
+              >
+                <option value="CPF">CPF</option>
+                <option value="RG">RG</option>
+                <option value="UNKNOWN">Não identificado</option>
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Documento</span>
+              <input
+                value={passengerForm.documentNumber}
+                onChange={(event) => setPassengerForm((current) => ({ ...current, documentNumber: event.target.value }))}
+                placeholder="CPF, RG ou número informado pela equipe"
+                autoComplete="off"
+              />
+            </label>
+          </div>
+
+          <div className="form-grid">
+            <label className="field">
+              <span>Ônibus</span>
+              <select
+                value={passengerForm.busType}
+                onChange={(event) => setPassengerForm((current) => ({
+                  ...current,
+                  busType: event.target.value as PassengerInput['busType'],
+                }))}
+              >
+                <option value="UNSPECIFIED">Não informado</option>
+                <option value="DOUBLE_DECKER">Ônibus 2 andares</option>
+                <option value="CONVENTIONAL">Ônibus convencional</option>
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Situação do cadastro</span>
+              <select
+                value={passengerForm.reviewStatus}
+                onChange={(event) => setPassengerForm((current) => ({
+                  ...current,
+                  reviewStatus: event.target.value as PassengerInput['reviewStatus'],
+                }))}
+              >
+                <option value="CONFIRMED">Confirmado</option>
+                <option value="REVIEW">Precisa revisar</option>
+              </select>
+            </label>
+
+            {editingPassenger?.reviewStatus === 'REVIEW' && passengerForm.reviewStatus === 'CONFIRMED' ? (
+              <div className="passenger-review-resolution-note">
+                <CheckCircle2 aria-hidden="true" />
+                <span>Ao salvar, este passageiro será marcado como revisado e sairá da lista de cadastros para conferir.</span>
+              </div>
+            ) : null}
+          </div>
+
+          {editingPassenger?.importWarning ? (
+            <div className={`passenger-review-origin ${passengerForm.reviewStatus === 'REVIEW' ? 'is-open' : 'is-resolved'}`}>
+              {passengerForm.reviewStatus === 'REVIEW' ? <AlertTriangle aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+              <div>
+                <strong>Alerta preservado da lista original</strong>
+                <p>{editingPassenger.importWarning}</p>
+                <small>Ao marcar o cadastro como confirmado, este alerta permanece guardado como histórico da importação.</small>
+              </div>
+            </div>
+          ) : null}
 
           <fieldset className="period-fieldset">
             <legend>Período *</legend>
