@@ -162,6 +162,7 @@ export type PassengerUpdateStatus = 'NEW' | 'CHANGED' | 'UNCHANGED' | 'CONFLICT'
 
 export interface PassengerPdfImportRow {
   rowKey: string
+  passengerId?: string
   sourceFile: string
   sourcePage: number
   fullName: string
@@ -171,11 +172,14 @@ export interface PassengerPdfImportRow {
   travelPeriod: TravelPeriod | ''
   busType: PassengerBusType
   sourceRole: PassengerSourceRole
+  phone?: string
+  reviewStatus?: PassengerReviewStatus
+  notes?: string
   parseWarning: string
 }
 
 export interface PassengerUpdateChange {
-  field: 'fullName' | 'documentNumber' | 'documentType' | 'city' | 'travelPeriod' | 'busType' | 'sourceRole'
+  field: 'fullName' | 'documentNumber' | 'documentType' | 'city' | 'travelPeriod' | 'busType' | 'sourceRole' | 'phone' | 'reviewStatus' | 'notes'
   label: string
   previousValue: string
   nextValue: string

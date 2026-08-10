@@ -543,12 +543,20 @@ function roleLabel(value: Passenger['sourceRole'] | PassengerPdfImportRow['sourc
   return value === 'GUIDE' ? 'Guia' : 'Passageiro'
 }
 
+function reviewStatusLabel(value: Passenger['reviewStatus']) {
+  return value === 'REVIEW' ? 'Revisar' : 'Confirmado'
+}
+
 function appendImportWarning(current: string, warning: string) {
   const clean = warning.trim()
   if (!clean) return current
   if (!current) return clean
   if (current.includes(clean)) return current
   return `${current} ${clean}`
+}
+
+function importRowLocation(row: PassengerPdfImportRow) {
+  return row.sourcePage ? `${row.sourceFile}, pág. ${row.sourcePage}` : row.sourceFile
 }
 
 function candidateSpecificityScore(passenger: Passenger, row: PassengerPdfImportRow) {
@@ -622,13 +630,36 @@ function calculatePassengerChanges(passenger: Passenger, row: PassengerPdfImport
       ),
     )
   }
+  if (row.phone !== undefined && passenger.phone.trim() !== row.phone.trim()) {
+    changes.push(
+      updateChange('phone', 'Telefone', passenger.phone || 'Não informado', row.phone || 'Não informado'),
+    )
+  }
+  if (row.reviewStatus !== undefined && passenger.reviewStatus !== row.reviewStatus) {
+    changes.push(
+      updateChange(
+        'reviewStatus',
+        'Situação do cadastro',
+        reviewStatusLabel(passenger.reviewStatus),
+        reviewStatusLabel(row.reviewStatus),
+      ),
+    )
+  }
+  if (row.notes !== undefined && passenger.notes.trim() !== row.notes.trim()) {
+    changes.push(
+      updateChange('notes', 'Observação', passenger.notes || 'Sem observação', row.notes || 'Sem observação'),
+    )
+  }
   return changes
 }
 
 function structuralRowProblem(row: PassengerPdfImportRow) {
-  if (!row.fullName.trim()) return 'Nome não identificado no PDF.'
-  if (!row.city) return 'Cidade não identificada no PDF.'
-  if (!row.travelPeriod) return 'Período não identificado no PDF.'
+  if (!row.fullName.trim()) return 'Nome não identificado no arquivo.'
+  if (!row.city) return 'Cidade não identificada no arquivo.'
+  if (!(CITIES as readonly string[]).includes(row.city)) {
+    return `A cidade “${row.city}” não existe na lista atual do aplicativo.`
+  }
+  if (!row.travelPeriod) return 'Período não identificado no arquivo.'
   return ''
 }
 
@@ -650,6 +681,11 @@ export async function previewPassengerPdfUpdate(
   ])
   const passengers = storedPassengers.map(withPassengerDefaults)
   const items: PassengerUpdatePreviewItem[] = []
+  const spreadsheetIdCounts = new Map<string, number>()
+  for (const row of rows) {
+    if (!row.passengerId) continue
+    spreadsheetIdCounts.set(row.passengerId, (spreadsheetIdCounts.get(row.passengerId) ?? 0) + 1)
+  }
 
   for (const row of rows) {
     const structuralProblem = structuralRowProblem(row)
@@ -661,6 +697,53 @@ export async function previewPassengerPdfUpdate(
         candidatePassengerIds: [],
         changes: [],
         message: structuralProblem,
+      })
+      continue
+    }
+
+    if (row.passengerId && (spreadsheetIdCounts.get(row.passengerId) ?? 0) > 1) {
+      items.push({
+        id: row.rowKey,
+        row,
+        status: 'CONFLICT',
+        candidatePassengerIds: [row.passengerId],
+        changes: [],
+        message: 'O mesmo identificador interno aparece em mais de uma linha da planilha. Isso pode acontecer quando uma linha existente é copiada para criar outra pessoa. Corrija a planilha antes de importar.',
+      })
+      continue
+    }
+
+    if (row.passengerId) {
+      const exactPassenger = passengers.find((passenger) => passenger.id === row.passengerId)
+      if (!exactPassenger) {
+        items.push({
+          id: row.rowKey,
+          row,
+          status: 'CONFLICT',
+          candidatePassengerIds: [],
+          changes: [],
+          message: 'O identificador interno desta linha não existe mais no aplicativo. Nenhum cadastro será alterado automaticamente.',
+        })
+        continue
+      }
+
+      const changes = calculatePassengerChanges(exactPassenger, row)
+      const needsWarningUpdate = Boolean(
+        row.parseWarning && !exactPassenger.importWarning.includes(row.parseWarning),
+      )
+      const hasUpdate = changes.length > 0 || needsWarningUpdate
+      items.push({
+        id: row.rowKey,
+        row,
+        status: hasUpdate ? 'CHANGED' : 'UNCHANGED',
+        matchedPassengerId: exactPassenger.id,
+        candidatePassengerIds: [exactPassenger.id],
+        changes,
+        message: changes.length > 0
+          ? `${changes.length} ${changes.length === 1 ? 'informação será atualizada' : 'informações serão atualizadas'} a partir da planilha exportada pelo aplicativo.`
+          : needsWarningUpdate
+            ? 'A planilha contém uma informação que precisa ser confirmada. O cadastro será encaminhado para revisão.'
+            : 'Cadastro já está igual à planilha.',
       })
       continue
     }
@@ -798,19 +881,19 @@ export async function applyPassengerPdfUpdate(
         fullName: row.fullName.trim(),
         normalizedName: normalizeText(row.fullName),
         city: row.city,
-        phone: '',
+        phone: row.phone?.trim() ?? '',
         travelPeriod: row.travelPeriod || 'FIRST_WEEK',
         documentNumber: row.documentNumber.trim(),
         documentType: row.documentType,
         busType: row.busType,
-        reviewStatus: row.parseWarning ? 'REVIEW' : 'CONFIRMED',
+        reviewStatus: row.parseWarning ? 'REVIEW' : row.reviewStatus ?? 'CONFIRMED',
         importWarning: row.parseWarning,
         importSourceKey: row.rowKey,
         importSourceFile: row.sourceFile,
         importSourcePage: row.sourcePage,
         sourceRole: row.sourceRole,
         importedAt: timestamp,
-        notes: '',
+        notes: row.notes?.trim() ?? '',
         createdAt: timestamp,
         updatedAt: timestamp,
       }
@@ -828,14 +911,21 @@ export async function applyPassengerPdfUpdate(
         fullName: row.fullName.trim(),
         normalizedName: normalizeText(row.fullName),
         city: row.city || passenger.city,
+        phone: row.phone !== undefined ? row.phone.trim() : passenger.phone,
         travelPeriod: row.travelPeriod || passenger.travelPeriod,
         documentNumber: row.documentNumber.trim() || passenger.documentNumber,
         documentType: row.documentNumber ? row.documentType : passenger.documentType,
         busType: row.busType === 'UNSPECIFIED' ? passenger.busType : row.busType,
         sourceRole: row.sourceRole,
-        reviewStatus: row.parseWarning ? 'REVIEW' : passenger.reviewStatus,
-        reviewResolvedAt: row.parseWarning ? undefined : passenger.reviewResolvedAt,
+        reviewStatus: row.parseWarning ? 'REVIEW' : row.reviewStatus ?? passenger.reviewStatus,
+        reviewResolvedAt:
+          (row.reviewStatus === 'REVIEW' || row.parseWarning)
+            ? undefined
+            : row.reviewStatus === 'CONFIRMED' && passenger.reviewStatus === 'REVIEW'
+              ? timestamp
+              : passenger.reviewResolvedAt,
         importWarning: appendImportWarning(passenger.importWarning, row.parseWarning),
+        notes: row.notes !== undefined ? row.notes.trim() : passenger.notes,
         lastUpdateSourceFile: row.sourceFile,
         lastUpdateSourcePage: row.sourcePage,
         lastUpdatedFromImportAt: timestamp,
@@ -847,7 +937,7 @@ export async function applyPassengerPdfUpdate(
     }
 
     if (item.status === 'CONFLICT' && item.candidatePassengerIds.length > 0) {
-      const warning = `Conflito encontrado na atualização ${row.sourceFile}, pág. ${row.sourcePage}: ${item.message}`
+      const warning = `Conflito encontrado na atualização ${importRowLocation(row)}: ${item.message}`
       for (const candidateId of item.candidatePassengerIds) {
         const stored = await passengerStore.get(candidateId)
         if (!stored) continue
@@ -879,7 +969,7 @@ export async function applyPassengerPdfUpdate(
     warningCount: preview.warningCount,
     conflictNotes: preview.items
       .filter((item) => item.status === 'CONFLICT')
-      .map((item) => `${item.row.fullName || 'Linha não identificada'} (${item.row.sourceFile}, pág. ${item.row.sourcePage}): ${item.message}`),
+      .map((item) => `${item.row.fullName || 'Linha não identificada'} (${importRowLocation(item.row)}): ${item.message}`),
   }
   await batchStore.add(batch)
   await transaction.done

@@ -10,6 +10,7 @@ import {
   Edit3,
   Eye,
   FileClock,
+  FileSpreadsheet,
   History,
   ImageOff,
   LoaderCircle,
@@ -68,6 +69,8 @@ import type {
 } from '../domain/types'
 import { compressPhoto } from '../utils/imageCompression'
 import { parsePassengerUpdatePdfs } from '../utils/passengerPdfImport'
+import { parsePassengerUpdateExcel } from '../utils/passengerExcelImport'
+import { createPassengerWorkbook } from '../utils/passengerWorkbook'
 
 const emptyPassengerForm: PassengerInput = {
   fullName: '',
@@ -177,6 +180,8 @@ export function PassengersPage() {
   const [updatePreview, setUpdatePreview] = useState<PassengerUpdatePreview | null>(null)
   const [updateFilter, setUpdateFilter] = useState<PassengerUpdateStatus | 'ALL'>('ALL')
   const [parsingUpdate, setParsingUpdate] = useState(false)
+  const [parsingExcel, setParsingExcel] = useState(false)
+  const [exportingExcel, setExportingExcel] = useState(false)
   const [applyingUpdate, setApplyingUpdate] = useState(false)
   const [updateError, setUpdateError] = useState('')
 
@@ -476,6 +481,68 @@ export function PassengersPage() {
     }
   }
 
+  const handleExcelUpdateFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+
+    try {
+      setParsingExcel(true)
+      setUpdateError('')
+      setImportFeedback('')
+      const parsed = await parsePassengerUpdateExcel(file)
+      const preview = await previewPassengerPdfUpdate(
+        parsed.rows,
+        parsed.fingerprint,
+        parsed.fileNames,
+      )
+      setUpdateFilter('ALL')
+      setUpdatePreview(preview)
+    } catch (error) {
+      setUpdateError(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível interpretar a atualização em Excel.',
+      )
+    } finally {
+      setParsingExcel(false)
+    }
+  }
+
+  const handleExportExcel = async () => {
+    if (filteredPassengers.length === 0) return
+
+    try {
+      setExportingExcel(true)
+      setPageError('')
+      const { buffer, fileName } = await createPassengerWorkbook(filteredPassengers, {
+        city: cityFilter,
+        travelPeriod: periodFilter,
+        reviewOnly,
+        query,
+      })
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = fileName
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    } catch (error) {
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível gerar a planilha Excel de passageiros.',
+      )
+    } finally {
+      setExportingExcel(false)
+    }
+  }
+
   const handleApplyUpdate = async () => {
     if (!updatePreview || updatePreview.alreadyImportedAt) return
     const confirmed = window.confirm(
@@ -713,6 +780,15 @@ export function PassengersPage() {
           <button
             type="button"
             className="secondary-button"
+            onClick={() => void handleExportExcel()}
+            disabled={filteredPassengers.length === 0 || exportingExcel}
+          >
+            {exportingExcel ? <LoaderCircle className="spin" aria-hidden="true" /> : <FileSpreadsheet aria-hidden="true" />}
+            {exportingExcel ? 'Gerando Excel...' : 'Exportar Excel'}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
             onClick={handlePrintPassengers}
             disabled={filteredPassengers.length === 0}
           >
@@ -765,6 +841,16 @@ export function PassengersPage() {
                   multiple
                   disabled={parsingUpdate}
                   onChange={(event: ChangeEvent<HTMLInputElement>) => void handleUpdateFiles(event)}
+                />
+              </label>
+              <label className={`secondary-button passenger-update-file-button ${parsingExcel ? 'is-busy' : ''}`}>
+                {parsingExcel ? <LoaderCircle className="spin" aria-hidden="true" /> : <FileSpreadsheet aria-hidden="true" />}
+                {parsingExcel ? 'Lendo Excel...' : 'Importar atualização Excel'}
+                <input
+                  type="file"
+                  accept="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx"
+                  disabled={parsingExcel}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => void handleExcelUpdateFile(event)}
                 />
               </label>
               <button type="button" className="secondary-button" onClick={() => setImportHistoryOpen(true)}>
@@ -1103,7 +1189,7 @@ export function PassengersPage() {
       <Modal
         open={Boolean(updatePreview)}
         title="Revisar atualização da lista"
-        subtitle="O PDF é comparado com a base atual antes de qualquer gravação."
+        subtitle="O arquivo é comparado com a base atual antes de qualquer gravação."
         onClose={() => {
           if (applyingUpdate) return
           setUpdatePreview(null)
@@ -1159,7 +1245,7 @@ export function PassengersPage() {
                         {item.row.documentNumber || 'Documento não informado'} • {item.row.city || 'Cidade não identificada'} • {item.row.travelPeriod ? TRAVEL_PERIOD_LABELS[item.row.travelPeriod] : 'Período não identificado'} • {BUS_TYPE_LABELS[item.row.busType]}
                       </p>
                     </div>
-                    <small>{item.row.sourceFile} • pág. {item.row.sourcePage}</small>
+                    <small>{item.row.sourceFile}{item.row.sourcePage ? ` • pág. ${item.row.sourcePage}` : ''}</small>
                   </div>
 
                   {item.changes.length > 0 ? (
@@ -1196,7 +1282,7 @@ export function PassengersPage() {
 
             <div className="passenger-update-rules">
               <CheckCircle2 aria-hidden="true" />
-              <p><strong>Proteção da atualização:</strong> novos registros são incluídos, alterações exibidas acima são aplicadas, passageiros ausentes no novo PDF não são excluídos e conflitos nunca substituem dados automaticamente.</p>
+              <p><strong>Proteção da atualização:</strong> novos registros são incluídos, alterações exibidas acima são aplicadas, passageiros ausentes no novo arquivo não são excluídos e conflitos nunca substituem dados automaticamente.</p>
             </div>
 
             <div className="modal-actions">
@@ -1232,7 +1318,7 @@ export function PassengersPage() {
           {importBatches.length === 0 ? (
             <div className="mini-empty-state">
               <FileClock aria-hidden="true" />
-              <p>Nenhuma atualização em PDF foi aplicada depois da lista inicial.</p>
+              <p>Nenhuma atualização em PDF ou Excel foi aplicada depois da lista inicial.</p>
             </div>
           ) : (
             importBatches.map((batch, index) => (
