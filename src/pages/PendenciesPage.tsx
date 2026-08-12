@@ -101,7 +101,13 @@ export function PendenciesPage() {
   const [historyTarget, setHistoryTarget] = useState<LuggageReportItem | null>(null)
   const [historyMovements, setHistoryMovements] = useState<LuggageMovement[]>([])
   const [historyPhotos, setHistoryPhotos] = useState<PhotoRecord[]>([])
-  const [historyPhotoUrls, setHistoryPhotoUrls] = useState<Record<string, string>>({})
+  const historyPhotoUrls = useMemo(() => {
+    const urls: Record<string, string> = {}
+    for (const photo of historyPhotos) {
+      urls[photo.id] = URL.createObjectURL(photo.blob)
+    }
+    return urls
+  }, [historyPhotos])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [photoViewer, setPhotoViewer] = useState<{ title: string; url: string } | null>(null)
 
@@ -122,17 +128,16 @@ export function PendenciesPage() {
   }, [])
 
   useEffect(() => {
-    void loadReport()
+    const timeoutId = window.setTimeout(() => {
+      void loadReport()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
   }, [loadReport])
 
   useEffect(() => {
-    const urls: Record<string, string> = {}
-    for (const photo of historyPhotos) {
-      urls[photo.id] = URL.createObjectURL(photo.blob)
-    }
-    setHistoryPhotoUrls(urls)
-    return () => Object.values(urls).forEach((url) => URL.revokeObjectURL(url))
-  }, [historyPhotos])
+    return () => Object.values(historyPhotoUrls).forEach((url) => URL.revokeObjectURL(url))
+  }, [historyPhotoUrls])
 
   const normalizedQuery = useMemo(() => normalizeSearch(query), [query])
 

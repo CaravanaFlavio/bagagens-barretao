@@ -286,6 +286,7 @@ export function PassengersPage() {
   const [labelLoading, setLabelLoading] = useState(false)
   const [selectedLabelIds, setSelectedLabelIds] = useState<Set<string>>(() => new Set())
   const [labelPrintItems, setLabelPrintItems] = useState<LabelPrintItem[]>([])
+  const [labelPrintTitle, setLabelPrintTitle] = useState('')
 
   const [setPhoto, setSetPhoto] = useState<PhotoRecord | null>(null)
   const [luggagePhotos, setLuggagePhotos] = useState<Record<string, PhotoRecord>>({})
@@ -489,6 +490,32 @@ export function PassengersPage() {
 
   const labelPages = useMemo(() => chunkItems(labelPrintItems, 8), [labelPrintItems])
 
+  useEffect(() => {
+    if (labelPrintItems.length === 0 || !labelPrintTitle) return
+
+    const previousTitle = document.title
+    document.body.classList.add('printing-qr-labels')
+    document.title = labelPrintTitle
+
+    const restore = () => {
+      document.title = previousTitle
+      document.body.classList.remove('printing-qr-labels')
+      setLabelPrintItems([])
+      setLabelPrintTitle('')
+      window.removeEventListener('afterprint', restore)
+    }
+
+    window.addEventListener('afterprint', restore)
+    const timeoutId = window.setTimeout(() => window.print(), 80)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+      window.removeEventListener('afterprint', restore)
+      document.title = previousTitle
+      document.body.classList.remove('printing-qr-labels')
+    }
+  }, [labelPrintItems.length, labelPrintTitle])
+
   const loadLabelLuggage = async () => {
     try {
       setLabelLoading(true)
@@ -551,21 +578,8 @@ export function PassengersPage() {
   const printQrLabels = (items: LabelPrintItem[], titleSuffix: string) => {
     if (items.length === 0) return
 
-    const previousTitle = document.title
-    const prepared = items.map((item) => ({ ...item }))
-    setLabelPrintItems(prepared)
-    document.body.classList.add('printing-qr-labels')
-    document.title = `Etiquetas_QR_Barretao_2026_${fileNamePart(titleSuffix)}`
-
-    const restore = () => {
-      document.title = previousTitle
-      document.body.classList.remove('printing-qr-labels')
-      setLabelPrintItems([])
-      window.removeEventListener('afterprint', restore)
-    }
-
-    window.addEventListener('afterprint', restore)
-    window.setTimeout(() => window.print(), 80)
+    setLabelPrintItems(items.map((item) => ({ ...item })))
+    setLabelPrintTitle(`Etiquetas_QR_Barretao_2026_${fileNamePart(titleSuffix)}`)
   }
 
   const printSinglePassengerLabel = (passenger: PassengerSummary) => {

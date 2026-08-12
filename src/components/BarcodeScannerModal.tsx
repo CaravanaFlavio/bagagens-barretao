@@ -15,6 +15,7 @@ export function BarcodeScannerModal({ open, onClose, onDetected }: BarcodeScanne
   useEffect(() => {
     if (!open || !videoRef.current) return
 
+    const videoElement = videoRef.current
     let stopScanner: (() => void) | undefined
     let active = true
     const startScanner = async () => {
@@ -29,7 +30,7 @@ export function BarcodeScannerModal({ open, onClose, onDetected }: BarcodeScanne
               facingMode: { ideal: 'environment' },
             },
           },
-          videoRef.current!,
+          videoElement,
           (result) => {
             if (!result || !active) return
             active = false
@@ -50,7 +51,7 @@ export function BarcodeScannerModal({ open, onClose, onDetected }: BarcodeScanne
     return () => {
       active = false
       stopScanner?.()
-      const stream = videoRef.current?.srcObject
+      const stream = videoElement.srcObject
       if (stream instanceof MediaStream) {
         stream.getTracks().forEach((track) => track.stop())
       }

@@ -137,7 +137,11 @@ export function CityDeliveryPage() {
   }, [])
 
   useEffect(() => {
-    void loadOverview()
+    const timeoutId = window.setTimeout(() => {
+      void loadOverview()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
   }, [loadOverview])
 
   const loadWorkspace = useCallback(async (city: string, preserveDetails = false) => {
@@ -162,10 +166,13 @@ export function CityDeliveryPage() {
     }
   }, [])
 
+  const transferId = workspace?.transfer.id
+  const transferStatus = workspace?.transfer.status
+
   useEffect(() => {
-    if (!workspace || workspace.transfer.status !== 'DRAFT') return
+    if (!transferId || transferStatus !== 'DRAFT') return
     const timeout = window.setTimeout(() => {
-      void saveCityTransferDraftDetails(workspace.transfer.id, details)
+      void saveCityTransferDraftDetails(transferId, details)
         .then((transfer) => {
           setWorkspace((current) => current ? { ...current, transfer } : current)
           setDetailsSaveError('')
@@ -177,7 +184,7 @@ export function CityDeliveryPage() {
         })
     }, 450)
     return () => window.clearTimeout(timeout)
-  }, [details, workspace?.transfer.id, workspace?.transfer.status])
+  }, [details, transferId, transferStatus])
 
   const visibleCities = useMemo(() => {
     if (!overview) return []

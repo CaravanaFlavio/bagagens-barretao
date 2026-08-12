@@ -155,7 +155,11 @@ export function ContingencyPage() {
   }, [])
 
   useEffect(() => {
-    void loadSnapshot()
+    const timeoutId = window.setTimeout(() => {
+      void loadSnapshot()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
   }, [loadSnapshot])
 
   const filteredRows = useMemo(() => {

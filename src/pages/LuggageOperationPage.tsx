@@ -104,7 +104,10 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
   const [exceptionReason, setExceptionReason] = useState('')
 
   const [passengerPhoto, setPassengerPhoto] = useState<PhotoRecord | null>(null)
-  const [passengerPhotoUrl, setPassengerPhotoUrl] = useState('')
+  const passengerPhotoUrl = useMemo(
+    () => (passengerPhoto ? URL.createObjectURL(passengerPhoto.blob) : ''),
+    [passengerPhoto],
+  )
   const [photoBusy, setPhotoBusy] = useState(false)
   const [photoViewerOpen, setPhotoViewerOpen] = useState(false)
 
@@ -125,24 +128,23 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
   }, [operationKey])
 
   useEffect(() => {
-    setLoading(true)
-    setSnapshot(null)
-    setSelectedPassengerId(null)
-    setCode('')
-    setFeedback(null)
-    setPassengerPhoto(null)
-    void loadSnapshot()
+    const timeoutId = window.setTimeout(() => {
+      setLoading(true)
+      setSnapshot(null)
+      setSelectedPassengerId(null)
+      setCode('')
+      setFeedback(null)
+      setPassengerPhoto(null)
+      void loadSnapshot()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
   }, [loadSnapshot])
 
   useEffect(() => {
-    if (!passengerPhoto) {
-      setPassengerPhotoUrl('')
-      return
-    }
-    const url = URL.createObjectURL(passengerPhoto.blob)
-    setPassengerPhotoUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [passengerPhoto])
+    if (!passengerPhotoUrl) return
+    return () => URL.revokeObjectURL(passengerPhotoUrl)
+  }, [passengerPhotoUrl])
 
   const selectedGroup = useMemo(
     () => snapshot?.groups.find((group) => group.passenger.id === selectedPassengerId) ?? null,
