@@ -4,6 +4,7 @@ import {
   BriefcaseBusiness,
   CheckCircle2,
   Database,
+  Download,
   Camera,
   ChevronDown,
   Clock3,
@@ -43,6 +44,7 @@ import {
   listLuggageByPassenger,
   listLuggageMovements,
   listLuggagePhotosByPassenger,
+  listLuggageWithPassengers,
   importPassengers2026,
   applyPassengerPdfUpdate,
   listPassengerImportBatches,
@@ -58,6 +60,7 @@ import type {
   LuggageInput,
   LuggageMovement,
   LuggageStage,
+  Passenger,
   PassengerImport2026Status,
   PassengerImportBatch,
   PassengerInput,
@@ -71,6 +74,12 @@ import { compressPhoto } from '../utils/imageCompression'
 import { parsePassengerUpdatePdfs } from '../utils/passengerPdfImport'
 import { parsePassengerUpdateExcel } from '../utils/passengerExcelImport'
 import { createPassengerWorkbook } from '../utils/passengerWorkbook'
+import {
+  createQrSvgDataUrl,
+  downloadQrSvg,
+  luggageQrValue,
+  passengerQrValue,
+} from '../utils/operationalQr'
 
 const emptyPassengerForm: PassengerInput = {
   fullName: '',
@@ -114,6 +123,24 @@ const UPDATE_STATUS_LABELS: Record<PassengerUpdateStatus, string> = {
   UNCHANGED: 'Sem mudança',
   CONFLICT: 'Conflito',
 }
+
+type LabelMode = 'PASSENGER' | 'LUGGAGE'
+
+type LuggageLabelRecord = Awaited<ReturnType<typeof listLuggageWithPassengers>>[number]
+
+interface LabelPrintItem {
+  id: string
+  kind: LabelMode
+  qrValue: string
+  passengerName: string
+  city: string
+  travelPeriod: TravelPeriod
+  busType: PassengerSummary['busType']
+  luggageCode?: string
+  luggageType?: string
+  volumePosition?: string
+}
+
 
 const emptyLuggageForm: Omit<LuggageInput, 'passengerId'> = {
   code: '',
@@ -162,6 +189,58 @@ function fileNamePart(value: string) {
     .replace(/^_+|_+$/g, '')
 }
 
+function chunkItems<T>(items: T[], size: number) {
+  const chunks: T[][] = []
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size))
+  }
+  return chunks
+}
+
+function passengerLabelItem(passenger: PassengerSummary | Passenger): LabelPrintItem {
+  return {
+    id: `passenger-${passenger.id}`,
+    kind: 'PASSENGER',
+    qrValue: passengerQrValue(passenger.id, {
+      fullName: passenger.fullName,
+      city: passenger.city,
+      travelPeriod: TRAVEL_PERIOD_LABELS[passenger.travelPeriod],
+      busType: BUS_TYPE_LABELS[passenger.busType],
+    }),
+    passengerName: passenger.fullName,
+    city: passenger.city,
+    travelPeriod: passenger.travelPeriod,
+    busType: passenger.busType,
+  }
+}
+
+function luggageLabelItem(
+  luggage: Luggage,
+  passenger: PassengerSummary | Passenger,
+  position?: string,
+): LabelPrintItem {
+  return {
+    id: `luggage-${luggage.id}`,
+    kind: 'LUGGAGE',
+    qrValue: luggageQrValue(luggage.id, {
+      fullName: passenger.fullName,
+      city: passenger.city,
+      travelPeriod: TRAVEL_PERIOD_LABELS[passenger.travelPeriod],
+      busType: BUS_TYPE_LABELS[passenger.busType],
+      code: luggage.code,
+      luggageType: luggage.luggageType,
+      volumePosition: position,
+    }),
+    passengerName: passenger.fullName,
+    city: passenger.city,
+    travelPeriod: passenger.travelPeriod,
+    busType: passenger.busType,
+    luggageCode: luggage.code,
+    luggageType: luggage.luggageType,
+    volumePosition: position,
+  }
+}
+
 export function PassengersPage() {
   const [passengers, setPassengers] = useState<PassengerSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -200,6 +279,13 @@ export function PassengersPage() {
   const [luggageFormError, setLuggageFormError] = useState('')
   const [savingLuggage, setSavingLuggage] = useState(false)
   const [scannerOpen, setScannerOpen] = useState(false)
+
+  const [labelCenterOpen, setLabelCenterOpen] = useState(false)
+  const [labelMode, setLabelMode] = useState<LabelMode>('PASSENGER')
+  const [labelLuggage, setLabelLuggage] = useState<LuggageLabelRecord[]>([])
+  const [labelLoading, setLabelLoading] = useState(false)
+  const [selectedLabelIds, setSelectedLabelIds] = useState<Set<string>>(() => new Set())
+  const [labelPrintItems, setLabelPrintItems] = useState<LabelPrintItem[]>([])
 
   const [setPhoto, setSetPhoto] = useState<PhotoRecord | null>(null)
   const [luggagePhotos, setLuggagePhotos] = useState<Record<string, PhotoRecord>>({})
@@ -359,6 +445,154 @@ export function PassengersPage() {
     if (updateFilter === 'ALL') return updatePreview.items
     return updatePreview.items.filter((item) => item.status === updateFilter)
   }, [updateFilter, updatePreview])
+
+  const filteredPassengerIds = useMemo(
+    () => new Set(filteredPassengers.map((passenger) => passenger.id)),
+    [filteredPassengers],
+  )
+
+  const visibleLabelLuggage = useMemo(
+    () => labelLuggage.filter((item) => filteredPassengerIds.has(item.passenger.id)),
+    [filteredPassengerIds, labelLuggage],
+  )
+
+  const luggagePositions = useMemo(() => {
+    const byPassenger = new Map<string, LuggageLabelRecord[]>()
+    for (const item of labelLuggage) {
+      const current = byPassenger.get(item.passenger.id) ?? []
+      current.push(item)
+      byPassenger.set(item.passenger.id, current)
+    }
+
+    const positions = new Map<string, string>()
+    for (const items of byPassenger.values()) {
+      items.sort((a, b) => a.luggage.createdAt.localeCompare(b.luggage.createdAt))
+      items.forEach((item, index) => {
+        positions.set(item.luggage.id, `Volume ${index + 1} de ${items.length}`)
+      })
+    }
+    return positions
+  }, [labelLuggage])
+
+  const currentLabelIds = useMemo(
+    () =>
+      labelMode === 'PASSENGER'
+        ? filteredPassengers.map((passenger) => passenger.id)
+        : visibleLabelLuggage.map((item) => item.luggage.id),
+    [filteredPassengers, labelMode, visibleLabelLuggage],
+  )
+
+  const selectedVisibleCount = useMemo(
+    () => currentLabelIds.filter((id) => selectedLabelIds.has(id)).length,
+    [currentLabelIds, selectedLabelIds],
+  )
+
+  const labelPages = useMemo(() => chunkItems(labelPrintItems, 8), [labelPrintItems])
+
+  const loadLabelLuggage = async () => {
+    try {
+      setLabelLoading(true)
+      const result = await listLuggageWithPassengers()
+      setLabelLuggage(result)
+      return result
+    } finally {
+      setLabelLoading(false)
+    }
+  }
+
+  const openLabelCenter = async (mode: LabelMode = 'PASSENGER') => {
+    setLabelMode(mode)
+    setSelectedLabelIds(new Set())
+    setLabelCenterOpen(true)
+    if (mode === 'LUGGAGE') {
+      await loadLabelLuggage()
+    }
+  }
+
+  const changeLabelMode = async (mode: LabelMode) => {
+    setLabelMode(mode)
+    setSelectedLabelIds(new Set())
+    if (mode === 'LUGGAGE') {
+      await loadLabelLuggage()
+    }
+  }
+
+  const toggleLabelSelection = (id: string) => {
+    setSelectedLabelIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectAllVisibleLabels = () => {
+    setSelectedLabelIds(new Set(currentLabelIds))
+  }
+
+  const buildBulkLabelItems = (onlySelected: boolean) => {
+    if (labelMode === 'PASSENGER') {
+      return filteredPassengers
+        .filter((passenger) => !onlySelected || selectedLabelIds.has(passenger.id))
+        .map(passengerLabelItem)
+    }
+
+    return visibleLabelLuggage
+      .filter((item) => !onlySelected || selectedLabelIds.has(item.luggage.id))
+      .map((item) =>
+        luggageLabelItem(
+          item.luggage,
+          item.passenger,
+          luggagePositions.get(item.luggage.id),
+        ),
+      )
+  }
+
+  const printQrLabels = (items: LabelPrintItem[], titleSuffix: string) => {
+    if (items.length === 0) return
+
+    const previousTitle = document.title
+    const prepared = items.map((item) => ({ ...item }))
+    setLabelPrintItems(prepared)
+    document.body.classList.add('printing-qr-labels')
+    document.title = `Etiquetas_QR_Barretao_2026_${fileNamePart(titleSuffix)}`
+
+    const restore = () => {
+      document.title = previousTitle
+      document.body.classList.remove('printing-qr-labels')
+      setLabelPrintItems([])
+      window.removeEventListener('afterprint', restore)
+    }
+
+    window.addEventListener('afterprint', restore)
+    window.setTimeout(() => window.print(), 80)
+  }
+
+  const printSinglePassengerLabel = (passenger: PassengerSummary) => {
+    printQrLabels([passengerLabelItem(passenger)], `Passageiro_${passenger.fullName}`)
+  }
+
+  const printSingleLuggageLabel = (item: Luggage, passenger: PassengerSummary, passengerLuggage: Luggage[]) => {
+    const sorted = [...passengerLuggage].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const index = sorted.findIndex((candidate) => candidate.id === item.id)
+    const position = index >= 0 ? `Volume ${index + 1} de ${sorted.length}` : undefined
+    printQrLabels(
+      [luggageLabelItem(item, passenger, position)],
+      `Volume_${passenger.fullName}_${item.code}`,
+    )
+  }
+
+  const downloadSelectedQr = () => {
+    const items = buildBulkLabelItems(true)
+    if (items.length !== 1) return
+
+    const item = items[0]
+    const suffix = item.kind === 'PASSENGER'
+      ? `Passageiro_${item.passengerName}`
+      : `Volume_${item.passengerName}_${item.luggageCode ?? item.id}`
+
+    downloadQrSvg(item.qrValue, `QR_Barretao_2026_${fileNamePart(suffix)}.svg`)
+  }
 
   const openNewPassenger = () => {
     setEditingPassenger(null)
@@ -777,6 +1011,10 @@ export function PassengersPage() {
           <p>Cadastre as pessoas antes das bagagens chegarem ao galpão.</p>
         </div>
         <div className="page-title-actions">
+          <button type="button" className="secondary-button" onClick={() => void openLabelCenter('PASSENGER')}>
+            <Printer aria-hidden="true" />
+            Etiquetas QR
+          </button>
           <button
             type="button"
             className="secondary-button"
@@ -1058,6 +1296,10 @@ export function PassengersPage() {
                   <PackagePlus aria-hidden="true" />
                   Incluir bagagem
                 </button>
+                <button type="button" className="action-button" onClick={() => printSinglePassengerLabel(passenger)}>
+                  <Printer aria-hidden="true" />
+                  Etiqueta QR
+                </button>
                 <button type="button" className="action-button" onClick={() => openEditPassenger(passenger)}>
                   <Edit3 aria-hidden="true" />
                   Editar
@@ -1072,6 +1314,165 @@ export function PassengersPage() {
         </section>
       )}
 
+
+      <Modal
+        open={labelCenterOpen}
+        title="Etiquetas QR"
+        subtitle="Impressão em A4 com 8 etiquetas por folha. A lista respeita os filtros atuais de Passageiros."
+        onClose={() => {
+          setLabelCenterOpen(false)
+          setSelectedLabelIds(new Set())
+        }}
+      >
+        <div className="qr-label-center">
+          <div className="qr-label-mode-tabs" role="tablist" aria-label="Tipo de etiqueta">
+            <button
+              type="button"
+              className={labelMode === 'PASSENGER' ? 'is-active' : ''}
+              onClick={() => void changeLabelMode('PASSENGER')}
+            >
+              <UserRound aria-hidden="true" />
+              Passageiros
+            </button>
+            <button
+              type="button"
+              className={labelMode === 'LUGGAGE' ? 'is-active' : ''}
+              onClick={() => void changeLabelMode('LUGGAGE')}
+            >
+              <BriefcaseBusiness aria-hidden="true" />
+              Volumes sem lacre
+            </button>
+          </div>
+
+          <div className="qr-label-guidance">
+            <AlertTriangle aria-hidden="true" />
+            <div>
+              <strong>{labelMode === 'PASSENGER' ? 'QR do passageiro' : 'Etiqueta reserva de volume'}</strong>
+              <p>
+                {labelMode === 'PASSENGER'
+                  ? 'O QR mostra nome, cidade, semana e ônibus fora do app. Dentro do app, o scanner localiza o cadastro completo. CPF/RG não são gravados no QR.'
+                  : 'Use somente no volume em que não for possível colocar o lacre físico. Fora do app, o QR mostra informações básicas; dentro do app, localiza o cadastro completo.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="qr-label-toolbar">
+            <div>
+              <strong>
+                {labelMode === 'PASSENGER' ? filteredPassengers.length : visibleLabelLuggage.length}
+              </strong>
+              <span>{labelMode === 'PASSENGER' ? 'passageiros disponíveis' : 'volumes disponíveis'}</span>
+              <small>{selectedVisibleCount} selecionados</small>
+            </div>
+            <div>
+              <button type="button" className="secondary-button" onClick={selectAllVisibleLabels} disabled={currentLabelIds.length === 0}>
+                Selecionar todos
+              </button>
+              <button type="button" className="secondary-button" onClick={() => setSelectedLabelIds(new Set())} disabled={selectedVisibleCount === 0}>
+                Limpar seleção
+              </button>
+            </div>
+          </div>
+
+          {labelMode === 'LUGGAGE' && labelLoading ? (
+            <div className="loading-state">
+              <LoaderCircle className="spin" aria-hidden="true" />
+              Carregando volumes...
+            </div>
+          ) : (
+            <div className="qr-label-selection-list">
+              {labelMode === 'PASSENGER'
+                ? filteredPassengers.map((passenger) => (
+                    <label className="qr-label-selection-item" key={`label-passenger-${passenger.id}`}>
+                      <input
+                        type="checkbox"
+                        checked={selectedLabelIds.has(passenger.id)}
+                        onChange={() => toggleLabelSelection(passenger.id)}
+                      />
+                      <span>
+                        <strong>{passenger.fullName}</strong>
+                        <small>{passenger.city} • {TRAVEL_PERIOD_LABELS[passenger.travelPeriod]} • {BUS_TYPE_LABELS[passenger.busType]}</small>
+                      </span>
+                    </label>
+                  ))
+                : visibleLabelLuggage.map((item) => (
+                    <label className="qr-label-selection-item" key={`label-luggage-${item.luggage.id}`}>
+                      <input
+                        type="checkbox"
+                        checked={selectedLabelIds.has(item.luggage.id)}
+                        onChange={() => toggleLabelSelection(item.luggage.id)}
+                      />
+                      <span>
+                        <strong>{item.passenger.fullName} • {item.luggage.code}</strong>
+                        <small>{item.luggage.luggageType} • {luggagePositions.get(item.luggage.id)} • {item.passenger.city}</small>
+                      </span>
+                    </label>
+                  ))}
+            </div>
+          )}
+
+          <div className="qr-label-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={selectedVisibleCount !== 1}
+              onClick={downloadSelectedQr}
+              title={selectedVisibleCount === 1 ? 'Baixar o QR selecionado em SVG' : 'Selecione somente um item para baixar o QR'}
+            >
+              <Download aria-hidden="true" />
+              Baixar QR
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={selectedVisibleCount === 0}
+              onClick={() => printQrLabels(buildBulkLabelItems(true), labelMode === 'PASSENGER' ? 'Passageiros_Selecionados' : 'Volumes_Selecionados')}
+            >
+              <Printer aria-hidden="true" />
+              Imprimir selecionados ({selectedVisibleCount})
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={currentLabelIds.length === 0}
+              onClick={() => printQrLabels(buildBulkLabelItems(false), labelMode === 'PASSENGER' ? 'Passageiros_Todos' : 'Volumes_Todos')}
+            >
+              <Printer aria-hidden="true" />
+              Imprimir todos ({currentLabelIds.length})
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <section className="qr-label-print-sheet" aria-hidden="true">
+        {labelPages.map((pageItems, pageIndex) => (
+          <div className="qr-label-print-page" key={`qr-label-page-${pageIndex}`}>
+            {pageItems.map((item) => (
+              <article className="qr-label-print-card" key={item.id}>
+                <div className="qr-label-print-card__content">
+                  <small>CARAVANA FLÁVIO GONÇALVES • BARRETÃO 2026</small>
+                  <strong className="qr-label-print-card__name">{item.passengerName}</strong>
+                  <span>{item.city}</span>
+                  <span>{TRAVEL_PERIOD_LABELS[item.travelPeriod]} • {BUS_TYPE_LABELS[item.busType]}</span>
+                  {item.kind === 'LUGGAGE' ? (
+                    <>
+                      <strong className="qr-label-print-card__code">{item.luggageCode}</strong>
+                      <span>{item.volumePosition} • {item.luggageType}</span>
+                      <em>ETIQUETA RESERVA • usar quando o lacre não puder ser fixado</em>
+                    </>
+                  ) : (
+                    <em>IDENTIFICAÇÃO DO PASSAGEIRO</em>
+                  )}
+                </div>
+                <div className="qr-label-print-card__qr">
+                  <img src={createQrSvgDataUrl(item.qrValue)} alt="QR Code" />
+                  <small>{item.kind === 'LUGGAGE' ? 'VOLUME' : 'PASSAGEIRO'}</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        ))}
+      </section>
 
       <section className="passenger-print-report" aria-hidden="true">
         <header className="passenger-print-report__header">
@@ -1735,6 +2136,15 @@ export function PassengersPage() {
                               <span>Remover foto</span>
                             </button>
                           ) : null}
+                          <button
+                            type="button"
+                            className="mini-action-button"
+                            onClick={() => luggagePassenger && printSingleLuggageLabel(item, luggagePassenger, luggage)}
+                            title="Imprimir etiqueta reserva deste volume"
+                          >
+                            <Printer aria-hidden="true" />
+                            <span>Etiqueta reserva</span>
+                          </button>
                           <button type="button" className="mini-action-button" onClick={() => void openHistory(item)} title="Abrir histórico">
                             <History aria-hidden="true" />
                             <span>Histórico</span>

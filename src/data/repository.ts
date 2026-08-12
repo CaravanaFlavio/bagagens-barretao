@@ -215,6 +215,64 @@ export async function listLuggageByPassenger(passengerId: string): Promise<Lugga
   return luggage.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
+export async function listLuggageWithPassengers(): Promise<Array<{ luggage: Luggage; passenger: Passenger }>> {
+  const database = await getDatabase()
+  const [luggage, passengers] = await Promise.all([
+    database.getAll('luggage'),
+    database.getAll('passengers'),
+  ])
+
+  const passengersById = new Map(
+    passengers.map((passenger) => [passenger.id, withPassengerDefaults(passenger)]),
+  )
+
+  return luggage
+    .map((item) => {
+      const passenger = passengersById.get(item.passengerId)
+      return passenger ? { luggage: item, passenger } : null
+    })
+    .filter((item): item is { luggage: Luggage; passenger: Passenger } => Boolean(item))
+    .sort((a, b) => {
+      const passengerCompare = a.passenger.fullName.localeCompare(b.passenger.fullName, 'pt-BR')
+      return passengerCompare || a.luggage.createdAt.localeCompare(b.luggage.createdAt)
+    })
+}
+
+export async function findLuggageByCodeWithPassenger(
+  code: string,
+): Promise<{ luggage: Luggage; passenger: Passenger } | null> {
+  const database = await getDatabase()
+  const normalizedCode = normalizeCode(code)
+  if (!normalizedCode) return null
+
+  const luggage = await database.getFromIndex('luggage', 'by-code', normalizedCode)
+  if (!luggage) return null
+
+  const passenger = await database.get('passengers', luggage.passengerId)
+  if (!passenger) return null
+
+  return { luggage, passenger: withPassengerDefaults(passenger) }
+}
+
+export async function findLuggageByIdWithPassenger(
+  luggageId: string,
+): Promise<{ luggage: Luggage; passenger: Passenger } | null> {
+  const database = await getDatabase()
+  const luggage = await database.get('luggage', luggageId)
+  if (!luggage) return null
+
+  const passenger = await database.get('passengers', luggage.passengerId)
+  if (!passenger) return null
+
+  return { luggage, passenger: withPassengerDefaults(passenger) }
+}
+
+export async function getPassengerById(passengerId: string): Promise<Passenger | null> {
+  const database = await getDatabase()
+  const passenger = await database.get('passengers', passengerId)
+  return passenger ? withPassengerDefaults(passenger) : null
+}
+
 export async function createLuggage(input: LuggageInput): Promise<Luggage> {
   const database = await getDatabase()
   const normalizedCode = normalizeCode(input.code)
