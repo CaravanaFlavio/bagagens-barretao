@@ -9,14 +9,33 @@ import {
   type DocumentData,
   type Unsubscribe,
 } from 'firebase/firestore'
-import type { Passenger } from '../domain/types'
+import type {
+  CityTransfer,
+  Luggage,
+  LuggageMovement,
+  OperationClosure,
+  Passenger,
+  PassengerImportBatch,
+} from '../domain/types'
 import { getDatabase } from './appDatabase'
 import { firestore } from './firebaseConfig'
 
 const PASSENGERS_COLLECTION = 'passengers'
+const LUGGAGE_COLLECTION = 'luggage'
+const MOVEMENTS_COLLECTION = 'movements'
+const OPERATION_CLOSURES_COLLECTION = 'operationClosures'
+const CITY_TRANSFERS_COLLECTION = 'cityTransfers'
+const PASSENGER_IMPORT_BATCHES_COLLECTION = 'passengerImportBatches'
 const METADATA_COLLECTION = 'appMetadata'
+
 const BOOTSTRAP_METADATA_KEY = 'cloud-sync-bootstrap-v1'
 const LAST_SYNCED_PASSENGER_IDS_KEY = 'cloud-sync-last-passenger-ids-v1'
+const LAST_SYNCED_LUGGAGE_IDS_KEY = 'cloud-sync-last-luggage-ids-v1'
+const LAST_SYNCED_MOVEMENT_IDS_KEY = 'cloud-sync-last-movement-ids-v1'
+const LAST_SYNCED_CLOSURE_IDS_KEY = 'cloud-sync-last-operation-closure-ids-v1'
+const LAST_SYNCED_TRANSFER_IDS_KEY = 'cloud-sync-last-city-transfer-ids-v1'
+const LAST_SYNCED_IMPORT_BATCH_IDS_KEY = 'cloud-sync-last-import-batch-ids-v1'
+
 const LOCAL_SCAN_INTERVAL_MS = 1500
 const FIRESTORE_BATCH_LIMIT = 450
 
@@ -24,6 +43,19 @@ interface AppMetadataRecord {
   key: string
   value: string
   updatedAt: string
+}
+
+interface SimpleSyncOptions<T extends { id: string }> {
+  collectionName: string
+  metadataKey: string
+  parse: (id: string, data: DocumentData) => T | null
+  timestamp: (record: T) => string
+  loadLocal: () => Promise<T[]>
+  putLocal: (record: T) => Promise<unknown>
+  deleteLocal: (id: string) => Promise<unknown>
+  getPreviousIds: () => Set<string>
+  setPreviousIds: (ids: Set<string>) => void
+  cloudUpdatedAt: Map<string, string>
 }
 
 export interface CloudInspection {
@@ -34,14 +66,32 @@ export interface CloudInspection {
 }
 
 let passengerUnsubscribe: Unsubscribe | null = null
+let luggageUnsubscribe: Unsubscribe | null = null
+let movementUnsubscribe: Unsubscribe | null = null
+let closureUnsubscribe: Unsubscribe | null = null
+let transferUnsubscribe: Unsubscribe | null = null
+let importBatchUnsubscribe: Unsubscribe | null = null
 let metadataUnsubscribe: Unsubscribe | null = null
+
 let localScanTimer: number | null = null
 let onlineListener: (() => void) | null = null
 let syncStarted = false
 let bootstrapInFlight: Promise<void> | null = null
+
 let previousLocalPassengerIds = new Set<string>()
+let previousLocalLuggageIds = new Set<string>()
+let previousLocalMovementIds = new Set<string>()
+let previousLocalClosureIds = new Set<string>()
+let previousLocalTransferIds = new Set<string>()
+let previousLocalImportBatchIds = new Set<string>()
 let previousLocalMetadataKeys = new Set<string>()
+
 const cloudPassengerUpdatedAt = new Map<string, string>()
+const cloudLuggageUpdatedAt = new Map<string, string>()
+const cloudMovementUpdatedAt = new Map<string, string>()
+const cloudClosureUpdatedAt = new Map<string, string>()
+const cloudTransferUpdatedAt = new Map<string, string>()
+const cloudImportBatchUpdatedAt = new Map<string, string>()
 const cloudMetadataUpdatedAt = new Map<string, string>()
 
 function now() {
@@ -57,6 +107,42 @@ function asPassenger(id: string, data: DocumentData): Passenger | null {
   if (typeof data.fullName !== 'string') return null
   if (typeof data.updatedAt !== 'string') return null
   return { ...data, id } as Passenger
+}
+
+function asLuggage(id: string, data: DocumentData): Luggage | null {
+  if (!data || typeof data !== 'object') return null
+  if (typeof data.passengerId !== 'string') return null
+  if (typeof data.normalizedCode !== 'string') return null
+  if (typeof data.updatedAt !== 'string') return null
+  return { ...data, id } as Luggage
+}
+
+function asMovement(id: string, data: DocumentData): LuggageMovement | null {
+  if (!data || typeof data !== 'object') return null
+  if (typeof data.luggageId !== 'string') return null
+  if (typeof data.occurredAt !== 'string') return null
+  return { ...data, id } as LuggageMovement
+}
+
+function asOperationClosure(id: string, data: DocumentData): OperationClosure | null {
+  if (!data || typeof data !== 'object') return null
+  if (typeof data.operationKey !== 'string') return null
+  if (typeof data.finalizedAt !== 'string') return null
+  return { ...data, id } as OperationClosure
+}
+
+function asCityTransfer(id: string, data: DocumentData): CityTransfer | null {
+  if (!data || typeof data !== 'object') return null
+  if (typeof data.city !== 'string') return null
+  if (typeof data.updatedAt !== 'string') return null
+  return { ...data, id } as CityTransfer
+}
+
+function asPassengerImportBatch(id: string, data: DocumentData): PassengerImportBatch | null {
+  if (!data || typeof data !== 'object') return null
+  if (typeof data.fingerprint !== 'string') return null
+  if (typeof data.importedAt !== 'string') return null
+  return { ...data, id } as PassengerImportBatch
 }
 
 function asMetadata(id: string, data: DocumentData): AppMetadataRecord | null {
@@ -87,10 +173,11 @@ async function markBootstrappedLocally() {
   })
 }
 
-async function loadLastSyncedPassengerIds() {
+async function loadLastSyncedIds(metadataKey: string) {
   const database = await getDatabase()
-  const record = await database.get('appMetadata', LAST_SYNCED_PASSENGER_IDS_KEY)
+  const record = await database.get('appMetadata', metadataKey)
   if (!record?.value) return new Set<string>()
+
   try {
     const parsed = JSON.parse(record.value) as unknown
     if (!Array.isArray(parsed)) return new Set<string>()
@@ -100,11 +187,11 @@ async function loadLastSyncedPassengerIds() {
   }
 }
 
-async function saveLastSyncedPassengerIds(ids: Iterable<string>) {
+async function saveLastSyncedIds(metadataKey: string, ids: Iterable<string>) {
   const database = await getDatabase()
   const timestamp = now()
   await database.put('appMetadata', {
-    key: LAST_SYNCED_PASSENGER_IDS_KEY,
+    key: metadataKey,
     value: JSON.stringify(Array.from(ids).sort()),
     updatedAt: timestamp,
   })
@@ -139,7 +226,7 @@ async function renamePassengerLocally(
     if (!closure.passengerIdsWithoutLuggage.includes(previousId)) continue
     await closureStore.put({
       ...closure,
-      passengerIdsWithoutLuggage: closure.passengerIdsWithoutLuggage.map((id) =>
+      passengerIdsWithoutLuggage: closure.passengerIdsWithoutLuggage.map((id: string) =>
         id === previousId ? canonicalPassenger.id : id,
       ),
     })
@@ -149,6 +236,90 @@ async function renamePassengerLocally(
     await passengerStore.delete(previousId)
   }
   await passengerStore.put(canonicalPassenger)
+  await transaction.done
+}
+
+async function renameLuggageLocally(
+  previousId: string,
+  canonicalLuggage: Luggage,
+) {
+  const database = await getDatabase()
+  const transaction = database.transaction(
+    ['luggage', 'movements', 'photos', 'cityTransfers', 'operationClosures'],
+    'readwrite',
+  )
+  const luggageStore = transaction.objectStore('luggage')
+  const movementStore = transaction.objectStore('movements')
+  const photoStore = transaction.objectStore('photos')
+  const transferStore = transaction.objectStore('cityTransfers')
+  const closureStore = transaction.objectStore('operationClosures')
+
+  const movements = await movementStore.index('by-luggage').getAll(previousId)
+  for (const movement of movements) {
+    await movementStore.put({ ...movement, luggageId: canonicalLuggage.id })
+  }
+
+  const photos = await photoStore.index('by-luggage').getAll(previousId)
+  for (const photo of photos) {
+    await photoStore.put({ ...photo, luggageId: canonicalLuggage.id })
+  }
+
+  const replaceId = (ids: string[]) =>
+    ids.map((id: string) => (id === previousId ? canonicalLuggage.id : id))
+
+  const transfers = await transferStore.getAll()
+  for (const transfer of transfers) {
+    if (
+      !transfer.scannedLuggageIds.includes(previousId) &&
+      !transfer.expectedLuggageIds.includes(previousId) &&
+      !transfer.missingLuggageIds.includes(previousId)
+    ) {
+      continue
+    }
+
+    await transferStore.put({
+      ...transfer,
+      scannedLuggageIds: replaceId(transfer.scannedLuggageIds),
+      expectedLuggageIds: replaceId(transfer.expectedLuggageIds),
+      missingLuggageIds: replaceId(transfer.missingLuggageIds),
+    })
+  }
+
+  const closures = await closureStore.getAll()
+  for (const closure of closures) {
+    if (
+      !closure.remainingLuggageIds.includes(previousId) &&
+      !closure.unexpectedLuggageIds.includes(previousId)
+    ) {
+      continue
+    }
+
+    await closureStore.put({
+      ...closure,
+      remainingLuggageIds: replaceId(closure.remainingLuggageIds),
+      unexpectedLuggageIds: replaceId(closure.unexpectedLuggageIds),
+    })
+  }
+
+  if (previousId !== canonicalLuggage.id) {
+    await luggageStore.delete(previousId)
+  }
+  await luggageStore.put(canonicalLuggage)
+  await transaction.done
+}
+
+async function renameImportBatchLocally(
+  previousId: string,
+  canonicalBatch: PassengerImportBatch,
+) {
+  const database = await getDatabase()
+  const transaction = database.transaction('passengerImportBatches', 'readwrite')
+  const store = transaction.objectStore('passengerImportBatches')
+
+  if (previousId !== canonicalBatch.id) {
+    await store.delete(previousId)
+  }
+  await store.put(canonicalBatch)
   await transaction.done
 }
 
@@ -166,17 +337,19 @@ async function deletePassengerLocally(passengerId: string) {
   const closureStore = transaction.objectStore('operationClosures')
 
   const passengerLuggage = await luggageStore.index('by-passenger').getAll(passengerId)
-  const luggageIds = new Set(passengerLuggage.map((item) => item.id))
+  const luggageIds = new Set<string>(passengerLuggage.map((item: Luggage) => item.id))
 
   for (const luggage of passengerLuggage) {
     const movementKeys = await movementStore.index('by-luggage').getAllKeys(luggage.id)
     for (const movementId of movementKeys) {
       await movementStore.delete(movementId)
     }
+
     const photoKeys = await photoStore.index('by-luggage').getAllKeys(luggage.id)
     for (const photoId of photoKeys) {
       await photoStore.delete(photoId)
     }
+
     await luggageStore.delete(luggage.id)
   }
 
@@ -203,7 +376,7 @@ async function deletePassengerLocally(passengerId: string) {
     await closureStore.put({
       ...closure,
       passengerIdsWithoutLuggage: closure.passengerIdsWithoutLuggage.filter(
-        (id) => id !== passengerId,
+        (id: string) => id !== passengerId,
       ),
     })
   }
@@ -212,15 +385,90 @@ async function deletePassengerLocally(passengerId: string) {
   await transaction.done
 }
 
-async function commitPassengers(passengers: Passenger[]) {
-  for (let index = 0; index < passengers.length; index += FIRESTORE_BATCH_LIMIT) {
-    const chunk = passengers.slice(index, index + FIRESTORE_BATCH_LIMIT)
-    const batch = writeBatch(firestore)
-    for (const passenger of chunk) {
-      batch.set(doc(firestore, PASSENGERS_COLLECTION, passenger.id), passenger)
+async function deleteLuggageLocally(luggageId: string) {
+  const database = await getDatabase()
+  const transaction = database.transaction(
+    ['luggage', 'movements', 'photos', 'cityTransfers', 'operationClosures'],
+    'readwrite',
+  )
+  const luggageStore = transaction.objectStore('luggage')
+  const movementStore = transaction.objectStore('movements')
+  const photoStore = transaction.objectStore('photos')
+  const transferStore = transaction.objectStore('cityTransfers')
+  const closureStore = transaction.objectStore('operationClosures')
+
+  const movementKeys = await movementStore.index('by-luggage').getAllKeys(luggageId)
+  for (const movementId of movementKeys) {
+    await movementStore.delete(movementId)
+  }
+
+  const photoKeys = await photoStore.index('by-luggage').getAllKeys(luggageId)
+  for (const photoId of photoKeys) {
+    await photoStore.delete(photoId)
+  }
+
+  const removeId = (ids: string[]) => ids.filter((id) => id !== luggageId)
+
+  const transfers = await transferStore.getAll()
+  for (const transfer of transfers) {
+    if (
+      !transfer.scannedLuggageIds.includes(luggageId) &&
+      !transfer.expectedLuggageIds.includes(luggageId) &&
+      !transfer.missingLuggageIds.includes(luggageId)
+    ) {
+      continue
     }
+
+    await transferStore.put({
+      ...transfer,
+      scannedLuggageIds: removeId(transfer.scannedLuggageIds),
+      expectedLuggageIds: removeId(transfer.expectedLuggageIds),
+      missingLuggageIds: removeId(transfer.missingLuggageIds),
+      updatedAt: now(),
+    })
+  }
+
+  const closures = await closureStore.getAll()
+  for (const closure of closures) {
+    if (
+      !closure.remainingLuggageIds.includes(luggageId) &&
+      !closure.unexpectedLuggageIds.includes(luggageId)
+    ) {
+      continue
+    }
+
+    await closureStore.put({
+      ...closure,
+      remainingLuggageIds: removeId(closure.remainingLuggageIds),
+      unexpectedLuggageIds: removeId(closure.unexpectedLuggageIds),
+    })
+  }
+
+  await luggageStore.delete(luggageId)
+  await transaction.done
+}
+
+async function commitRecords<T extends { id: string }>(
+  collectionName: string,
+  records: T[],
+) {
+  for (let index = 0; index < records.length; index += FIRESTORE_BATCH_LIMIT) {
+    const chunk = records.slice(index, index + FIRESTORE_BATCH_LIMIT)
+    const batch = writeBatch(firestore)
+
+    for (const record of chunk) {
+      batch.set(
+        doc(firestore, collectionName, record.id),
+        { ...record } as DocumentData,
+      )
+    }
+
     await batch.commit()
   }
+}
+
+async function commitPassengers(passengers: Passenger[]) {
+  await commitRecords(PASSENGERS_COLLECTION, passengers)
 }
 
 async function commitMetadata(records: AppMetadataRecord[]) {
@@ -228,9 +476,11 @@ async function commitMetadata(records: AppMetadataRecord[]) {
   for (let index = 0; index < syncable.length; index += FIRESTORE_BATCH_LIMIT) {
     const chunk = syncable.slice(index, index + FIRESTORE_BATCH_LIMIT)
     const batch = writeBatch(firestore)
+
     for (const record of chunk) {
       batch.set(doc(firestore, METADATA_COLLECTION, record.key), record)
     }
+
     await batch.commit()
   }
 }
@@ -271,8 +521,21 @@ export async function seedCloudFromThisDevice() {
   }
 
   const database = await getDatabase()
-  const [passengers, metadata] = await Promise.all([
-    database.getAll('passengers') as Promise<Passenger[]>,
+  const [
+    passengers,
+    luggage,
+    movements,
+    closures,
+    transfers,
+    importBatches,
+    metadata,
+  ] = await Promise.all([
+    database.getAll('passengers'),
+    database.getAll('luggage'),
+    database.getAll('movements'),
+    database.getAll('operationClosures'),
+    database.getAll('cityTransfers'),
+    database.getAll('passengerImportBatches'),
     database.getAll('appMetadata') as Promise<AppMetadataRecord[]>,
   ])
 
@@ -281,21 +544,54 @@ export async function seedCloudFromThisDevice() {
   }
 
   await commitPassengers(passengers)
+  await commitRecords(LUGGAGE_COLLECTION, luggage)
+  await commitRecords(MOVEMENTS_COLLECTION, movements)
+  await commitRecords(OPERATION_CLOSURES_COLLECTION, closures)
+  await commitRecords(CITY_TRANSFERS_COLLECTION, transfers)
+  await commitRecords(PASSENGER_IMPORT_BATCHES_COLLECTION, importBatches)
   await commitMetadata(metadata)
-  await saveLastSyncedPassengerIds(passengers.map((passenger) => passenger.id))
+
+  await Promise.all([
+    saveLastSyncedIds(
+      LAST_SYNCED_PASSENGER_IDS_KEY,
+      passengers.map((passenger) => passenger.id),
+    ),
+    saveLastSyncedIds(
+      LAST_SYNCED_LUGGAGE_IDS_KEY,
+      luggage.map((item) => item.id),
+    ),
+    saveLastSyncedIds(
+      LAST_SYNCED_MOVEMENT_IDS_KEY,
+      movements.map((movement) => movement.id),
+    ),
+    saveLastSyncedIds(
+      LAST_SYNCED_CLOSURE_IDS_KEY,
+      closures.map((closure) => closure.id),
+    ),
+    saveLastSyncedIds(
+      LAST_SYNCED_TRANSFER_IDS_KEY,
+      transfers.map((transfer) => transfer.id),
+    ),
+    saveLastSyncedIds(
+      LAST_SYNCED_IMPORT_BATCH_IDS_KEY,
+      importBatches.map((batch) => batch.id),
+    ),
+  ])
+
   await markBootstrappedLocally()
   return passengers.length
 }
 
 async function reconcilePassengersFromServer() {
   const remoteSnapshot = await getDocsFromServer(collection(firestore, PASSENGERS_COLLECTION))
-  const remotePassengers = (remoteSnapshot.docs as Array<{ id: string; data(): DocumentData }>)
+  const remotePassengers = remoteSnapshot.docs
     .map((snapshot) => asPassenger(snapshot.id, snapshot.data()))
-    .filter((passenger: Passenger | null): passenger is Passenger => Boolean(passenger))
+    .filter((passenger): passenger is Passenger => Boolean(passenger))
 
   const database = await getDatabase()
-  let localPassengers = (await database.getAll('passengers')) as Passenger[]
-  const lastSyncedIds = await loadLastSyncedPassengerIds()
+  let localPassengers = await database.getAll('passengers')
+  const lastSyncedIds = await loadLastSyncedIds(LAST_SYNCED_PASSENGER_IDS_KEY)
+
   const localById = new Map<string, Passenger>(
     localPassengers.map((passenger) => [passenger.id, passenger]),
   )
@@ -315,8 +611,8 @@ async function reconcilePassengersFromServer() {
   for (const remotePassenger of remotePassengers) {
     remoteIds.add(remotePassenger.id)
     cloudPassengerUpdatedAt.set(remotePassenger.id, remotePassenger.updatedAt)
-    const exactLocal = localById.get(remotePassenger.id)
 
+    const exactLocal = localById.get(remotePassenger.id)
     if (exactLocal) {
       if (exactLocal.updatedAt > remotePassenger.updatedAt) {
         toPush.set(exactLocal.id, exactLocal)
@@ -340,6 +636,7 @@ async function reconcilePassengersFromServer() {
       await renamePassengerLocally(localPassenger.id, canonicalPassenger)
       localById.delete(localPassenger.id)
       localById.set(canonicalPassenger.id, canonicalPassenger)
+
       if (hasLocalManualChange) {
         toPush.set(canonicalPassenger.id, canonicalPassenger)
       }
@@ -355,8 +652,8 @@ async function reconcilePassengersFromServer() {
     localById.set(remotePassenger.id, remotePassenger)
   }
 
-  localPassengers = (await database.getAll('passengers')) as Passenger[]
-  for (const localPassenger of [...localPassengers]) {
+  localPassengers = await database.getAll('passengers')
+  for (const localPassenger of localPassengers) {
     if (remoteIds.has(localPassenger.id)) continue
 
     if (lastSyncedIds.has(localPassenger.id)) {
@@ -376,9 +673,263 @@ async function reconcilePassengersFromServer() {
     cloudPassengerUpdatedAt.delete(passengerId)
   }
 
-  localPassengers = (await database.getAll('passengers')) as Passenger[]
+  localPassengers = await database.getAll('passengers')
   previousLocalPassengerIds = new Set(localPassengers.map((passenger) => passenger.id))
-  await saveLastSyncedPassengerIds(previousLocalPassengerIds)
+  await saveLastSyncedIds(LAST_SYNCED_PASSENGER_IDS_KEY, previousLocalPassengerIds)
+}
+
+async function reconcileLuggageFromServer() {
+  const remoteSnapshot = await getDocsFromServer(collection(firestore, LUGGAGE_COLLECTION))
+  const remoteLuggage = remoteSnapshot.docs
+    .map((snapshot) => asLuggage(snapshot.id, snapshot.data()))
+    .filter((item): item is Luggage => Boolean(item))
+
+  const database = await getDatabase()
+  let localLuggage = await database.getAll('luggage')
+  const lastSyncedIds = await loadLastSyncedIds(LAST_SYNCED_LUGGAGE_IDS_KEY)
+
+  const localById = new Map<string, Luggage>(
+    localLuggage.map((item) => [item.id, item]),
+  )
+  const localByCode = new Map<string, Luggage>(
+    localLuggage.map((item) => [item.normalizedCode, item]),
+  )
+
+  const remoteIds = new Set<string>()
+  const toPush = new Map<string, Luggage>()
+  const toDeleteFromCloud = new Set<string>()
+
+  for (const remoteItem of remoteLuggage) {
+    remoteIds.add(remoteItem.id)
+    cloudLuggageUpdatedAt.set(remoteItem.id, remoteItem.updatedAt)
+
+    const exactLocal = localById.get(remoteItem.id)
+    if (exactLocal) {
+      if (exactLocal.updatedAt > remoteItem.updatedAt) {
+        toPush.set(exactLocal.id, exactLocal)
+      } else if (remoteItem.updatedAt > exactLocal.updatedAt) {
+        await database.put('luggage', remoteItem)
+      }
+      continue
+    }
+
+    const codeMatch = localByCode.get(remoteItem.normalizedCode)
+    if (codeMatch) {
+      const canonicalLuggage =
+        codeMatch.updatedAt > remoteItem.updatedAt
+          ? { ...codeMatch, id: remoteItem.id }
+          : remoteItem
+
+      await renameLuggageLocally(codeMatch.id, canonicalLuggage)
+      localById.delete(codeMatch.id)
+      localById.set(canonicalLuggage.id, canonicalLuggage)
+      localByCode.set(canonicalLuggage.normalizedCode, canonicalLuggage)
+
+      if (codeMatch.updatedAt > remoteItem.updatedAt) {
+        toPush.set(canonicalLuggage.id, canonicalLuggage)
+      }
+      continue
+    }
+
+    if (lastSyncedIds.has(remoteItem.id)) {
+      toDeleteFromCloud.add(remoteItem.id)
+      continue
+    }
+
+    await database.put('luggage', remoteItem)
+    localById.set(remoteItem.id, remoteItem)
+    localByCode.set(remoteItem.normalizedCode, remoteItem)
+  }
+
+  localLuggage = await database.getAll('luggage')
+  for (const localItem of localLuggage) {
+    if (remoteIds.has(localItem.id)) continue
+
+    if (lastSyncedIds.has(localItem.id)) {
+      await deleteLuggageLocally(localItem.id)
+      continue
+    }
+
+    toPush.set(localItem.id, localItem)
+  }
+
+  if (toPush.size > 0) {
+    await commitRecords(LUGGAGE_COLLECTION, Array.from(toPush.values()))
+  }
+
+  for (const luggageId of toDeleteFromCloud) {
+    await deleteDoc(doc(firestore, LUGGAGE_COLLECTION, luggageId))
+    cloudLuggageUpdatedAt.delete(luggageId)
+  }
+
+  localLuggage = await database.getAll('luggage')
+  previousLocalLuggageIds = new Set(localLuggage.map((item) => item.id))
+  await saveLastSyncedIds(LAST_SYNCED_LUGGAGE_IDS_KEY, previousLocalLuggageIds)
+}
+
+async function reconcileImportBatchesFromServer() {
+  const remoteSnapshot = await getDocsFromServer(
+    collection(firestore, PASSENGER_IMPORT_BATCHES_COLLECTION),
+  )
+  const remoteBatches = remoteSnapshot.docs
+    .map((snapshot) => asPassengerImportBatch(snapshot.id, snapshot.data()))
+    .filter((batch): batch is PassengerImportBatch => Boolean(batch))
+
+  const database = await getDatabase()
+  let localBatches = await database.getAll('passengerImportBatches')
+  const lastSyncedIds = await loadLastSyncedIds(LAST_SYNCED_IMPORT_BATCH_IDS_KEY)
+
+  const localById = new Map<string, PassengerImportBatch>(
+    localBatches.map((batch) => [batch.id, batch]),
+  )
+  const localByFingerprint = new Map<string, PassengerImportBatch>(
+    localBatches.map((batch) => [batch.fingerprint, batch]),
+  )
+
+  const remoteIds = new Set<string>()
+  const toPush = new Map<string, PassengerImportBatch>()
+  const toDeleteFromCloud = new Set<string>()
+
+  for (const remoteBatch of remoteBatches) {
+    remoteIds.add(remoteBatch.id)
+    cloudImportBatchUpdatedAt.set(remoteBatch.id, remoteBatch.importedAt)
+
+    const exactLocal = localById.get(remoteBatch.id)
+    if (exactLocal) {
+      if (exactLocal.importedAt > remoteBatch.importedAt) {
+        toPush.set(exactLocal.id, exactLocal)
+      } else if (remoteBatch.importedAt > exactLocal.importedAt) {
+        await database.put('passengerImportBatches', remoteBatch)
+      }
+      continue
+    }
+
+    const fingerprintMatch = localByFingerprint.get(remoteBatch.fingerprint)
+    if (fingerprintMatch) {
+      const canonicalBatch =
+        fingerprintMatch.importedAt > remoteBatch.importedAt
+          ? { ...fingerprintMatch, id: remoteBatch.id }
+          : remoteBatch
+
+      await renameImportBatchLocally(fingerprintMatch.id, canonicalBatch)
+      localById.delete(fingerprintMatch.id)
+      localById.set(canonicalBatch.id, canonicalBatch)
+      localByFingerprint.set(canonicalBatch.fingerprint, canonicalBatch)
+
+      if (fingerprintMatch.importedAt > remoteBatch.importedAt) {
+        toPush.set(canonicalBatch.id, canonicalBatch)
+      }
+      continue
+    }
+
+    if (lastSyncedIds.has(remoteBatch.id)) {
+      toDeleteFromCloud.add(remoteBatch.id)
+      continue
+    }
+
+    await database.put('passengerImportBatches', remoteBatch)
+    localById.set(remoteBatch.id, remoteBatch)
+    localByFingerprint.set(remoteBatch.fingerprint, remoteBatch)
+  }
+
+  localBatches = await database.getAll('passengerImportBatches')
+  for (const localBatch of localBatches) {
+    if (remoteIds.has(localBatch.id)) continue
+
+    if (lastSyncedIds.has(localBatch.id)) {
+      await database.delete('passengerImportBatches', localBatch.id)
+      continue
+    }
+
+    toPush.set(localBatch.id, localBatch)
+  }
+
+  if (toPush.size > 0) {
+    await commitRecords(PASSENGER_IMPORT_BATCHES_COLLECTION, Array.from(toPush.values()))
+  }
+
+  for (const batchId of toDeleteFromCloud) {
+    await deleteDoc(doc(firestore, PASSENGER_IMPORT_BATCHES_COLLECTION, batchId))
+    cloudImportBatchUpdatedAt.delete(batchId)
+  }
+
+  localBatches = await database.getAll('passengerImportBatches')
+  previousLocalImportBatchIds = new Set(localBatches.map((batch) => batch.id))
+  await saveLastSyncedIds(
+    LAST_SYNCED_IMPORT_BATCH_IDS_KEY,
+    previousLocalImportBatchIds,
+  )
+}
+
+async function reconcileSimpleCollection<T extends { id: string }>(
+  options: SimpleSyncOptions<T>,
+) {
+  const remoteSnapshot = await getDocsFromServer(
+    collection(firestore, options.collectionName),
+  )
+  const remoteRecords = remoteSnapshot.docs
+    .map((snapshot) => options.parse(snapshot.id, snapshot.data()))
+    .filter((record): record is T => Boolean(record))
+
+  let localRecords = await options.loadLocal()
+  const lastSyncedIds = await loadLastSyncedIds(options.metadataKey)
+  const localById = new Map(localRecords.map((record) => [record.id, record]))
+
+  const remoteIds = new Set<string>()
+  const toPush = new Map<string, T>()
+  const toDeleteFromCloud = new Set<string>()
+
+  for (const remoteRecord of remoteRecords) {
+    remoteIds.add(remoteRecord.id)
+
+    const remoteTimestamp = options.timestamp(remoteRecord)
+    options.cloudUpdatedAt.set(remoteRecord.id, remoteTimestamp)
+
+    const localRecord = localById.get(remoteRecord.id)
+    if (localRecord) {
+      const localTimestamp = options.timestamp(localRecord)
+
+      if (localTimestamp > remoteTimestamp) {
+        toPush.set(localRecord.id, localRecord)
+      } else if (remoteTimestamp > localTimestamp) {
+        await options.putLocal(remoteRecord)
+      }
+      continue
+    }
+
+    if (lastSyncedIds.has(remoteRecord.id)) {
+      toDeleteFromCloud.add(remoteRecord.id)
+      continue
+    }
+
+    await options.putLocal(remoteRecord)
+  }
+
+  localRecords = await options.loadLocal()
+  for (const localRecord of localRecords) {
+    if (remoteIds.has(localRecord.id)) continue
+
+    if (lastSyncedIds.has(localRecord.id)) {
+      await options.deleteLocal(localRecord.id)
+      continue
+    }
+
+    toPush.set(localRecord.id, localRecord)
+  }
+
+  if (toPush.size > 0) {
+    await commitRecords(options.collectionName, Array.from(toPush.values()))
+  }
+
+  for (const recordId of toDeleteFromCloud) {
+    await deleteDoc(doc(firestore, options.collectionName, recordId))
+    options.cloudUpdatedAt.delete(recordId)
+  }
+
+  localRecords = await options.loadLocal()
+  const finalIds = new Set(localRecords.map((record) => record.id))
+  options.setPreviousIds(finalIds)
+  await saveLastSyncedIds(options.metadataKey, finalIds)
 }
 
 async function reconcileMetadataFromServer() {
@@ -394,10 +945,11 @@ async function reconcileMetadataFromServer() {
   for (const snapshot of remoteSnapshot.docs) {
     const remoteRecord = asMetadata(snapshot.id, snapshot.data())
     if (!remoteRecord || isSyncInternalMetadata(remoteRecord.key)) continue
+
     remoteKeys.add(remoteRecord.key)
     cloudMetadataUpdatedAt.set(remoteRecord.key, remoteRecord.updatedAt)
-    const localRecord = localByKey.get(remoteRecord.key)
 
+    const localRecord = localByKey.get(remoteRecord.key)
     if (!localRecord || remoteRecord.updatedAt >= localRecord.updatedAt) {
       await database.put('appMetadata', remoteRecord)
     } else {
@@ -416,11 +968,65 @@ async function reconcileMetadataFromServer() {
     await commitMetadata(toPush)
   }
 
+  const currentMetadata = (await database.getAll('appMetadata')) as AppMetadataRecord[]
   previousLocalMetadataKeys = new Set(
-    localMetadata
+    currentMetadata
       .filter((record) => !isSyncInternalMetadata(record.key))
       .map((record) => record.key),
   )
+}
+
+async function reconcileOperationalCollectionsFromServer() {
+  const database = await getDatabase()
+
+  await reconcileLuggageFromServer()
+
+  await reconcileSimpleCollection<LuggageMovement>({
+    collectionName: MOVEMENTS_COLLECTION,
+    metadataKey: LAST_SYNCED_MOVEMENT_IDS_KEY,
+    parse: asMovement,
+    timestamp: (movement) => movement.occurredAt,
+    loadLocal: () => database.getAll('movements'),
+    putLocal: (movement) => database.put('movements', movement),
+    deleteLocal: (movementId) => database.delete('movements', movementId),
+    getPreviousIds: () => previousLocalMovementIds,
+    setPreviousIds: (ids) => {
+      previousLocalMovementIds = ids
+    },
+    cloudUpdatedAt: cloudMovementUpdatedAt,
+  })
+
+  await reconcileSimpleCollection<OperationClosure>({
+    collectionName: OPERATION_CLOSURES_COLLECTION,
+    metadataKey: LAST_SYNCED_CLOSURE_IDS_KEY,
+    parse: asOperationClosure,
+    timestamp: (closure) => closure.finalizedAt,
+    loadLocal: () => database.getAll('operationClosures'),
+    putLocal: (closure) => database.put('operationClosures', closure),
+    deleteLocal: (closureId) => database.delete('operationClosures', closureId),
+    getPreviousIds: () => previousLocalClosureIds,
+    setPreviousIds: (ids) => {
+      previousLocalClosureIds = ids
+    },
+    cloudUpdatedAt: cloudClosureUpdatedAt,
+  })
+
+  await reconcileSimpleCollection<CityTransfer>({
+    collectionName: CITY_TRANSFERS_COLLECTION,
+    metadataKey: LAST_SYNCED_TRANSFER_IDS_KEY,
+    parse: asCityTransfer,
+    timestamp: (transfer) => transfer.updatedAt,
+    loadLocal: () => database.getAll('cityTransfers'),
+    putLocal: (transfer) => database.put('cityTransfers', transfer),
+    deleteLocal: (transferId) => database.delete('cityTransfers', transferId),
+    getPreviousIds: () => previousLocalTransferIds,
+    setPreviousIds: (ids) => {
+      previousLocalTransferIds = ids
+    },
+    cloudUpdatedAt: cloudTransferUpdatedAt,
+  })
+
+  await reconcileImportBatchesFromServer()
 }
 
 async function ensureBootstrap() {
@@ -428,10 +1034,13 @@ async function ensureBootstrap() {
 
   bootstrapInFlight = (async () => {
     if (!navigator.onLine) return
+
     const remoteSnapshot = await getDocsFromServer(collection(firestore, PASSENGERS_COLLECTION))
     if (remoteSnapshot.empty) return
+
     await reconcilePassengersFromServer()
     await reconcileMetadataFromServer()
+    await reconcileOperationalCollectionsFromServer()
     await markBootstrappedLocally()
   })().finally(() => {
     bootstrapInFlight = null
@@ -440,20 +1049,15 @@ async function ensureBootstrap() {
   return bootstrapInFlight
 }
 
-async function scanLocalChanges() {
-  if (!navigator.onLine) return
-  if (!(await isBootstrappedLocally())) return
+async function scanPassengers() {
   const database = await getDatabase()
-  const [passengers, metadata] = await Promise.all([
-    database.getAll('passengers') as Promise<Passenger[]>,
-    database.getAll('appMetadata') as Promise<AppMetadataRecord[]>,
-  ])
+  const passengers = await database.getAll('passengers')
 
   if (previousLocalPassengerIds.size === 0) {
-    previousLocalPassengerIds = await loadLastSyncedPassengerIds()
+    previousLocalPassengerIds = await loadLastSyncedIds(LAST_SYNCED_PASSENGER_IDS_KEY)
   }
 
-  const currentPassengerIds = new Set(passengers.map((passenger) => passenger.id))
+  const currentPassengerIds = new Set<string>(passengers.map((passenger) => passenger.id))
   for (const passenger of passengers) {
     const remoteUpdatedAt = cloudPassengerUpdatedAt.get(passenger.id)
     if (!remoteUpdatedAt || passenger.updatedAt > remoteUpdatedAt) {
@@ -467,11 +1071,113 @@ async function scanLocalChanges() {
     await deleteDoc(doc(firestore, PASSENGERS_COLLECTION, passengerId))
     cloudPassengerUpdatedAt.delete(passengerId)
   }
-  previousLocalPassengerIds = currentPassengerIds
-  await saveLastSyncedPassengerIds(previousLocalPassengerIds)
 
+  previousLocalPassengerIds = currentPassengerIds
+  await saveLastSyncedIds(LAST_SYNCED_PASSENGER_IDS_KEY, previousLocalPassengerIds)
+}
+
+async function scanLuggage() {
+  const database = await getDatabase()
+  const luggage = await database.getAll('luggage')
+
+  if (previousLocalLuggageIds.size === 0) {
+    previousLocalLuggageIds = await loadLastSyncedIds(LAST_SYNCED_LUGGAGE_IDS_KEY)
+  }
+
+  const currentIds = new Set<string>(luggage.map((item) => item.id))
+  for (const item of luggage) {
+    const remoteUpdatedAt = cloudLuggageUpdatedAt.get(item.id)
+    if (!remoteUpdatedAt || item.updatedAt > remoteUpdatedAt) {
+      await setDoc(doc(firestore, LUGGAGE_COLLECTION, item.id), item)
+      cloudLuggageUpdatedAt.set(item.id, item.updatedAt)
+    }
+  }
+
+  for (const luggageId of previousLocalLuggageIds) {
+    if (currentIds.has(luggageId)) continue
+    await deleteDoc(doc(firestore, LUGGAGE_COLLECTION, luggageId))
+    cloudLuggageUpdatedAt.delete(luggageId)
+  }
+
+  previousLocalLuggageIds = currentIds
+  await saveLastSyncedIds(LAST_SYNCED_LUGGAGE_IDS_KEY, previousLocalLuggageIds)
+}
+
+async function scanSimpleCollection<T extends { id: string }>(
+  options: SimpleSyncOptions<T>,
+) {
+  let previousIds = options.getPreviousIds()
+  if (previousIds.size === 0) {
+    previousIds = await loadLastSyncedIds(options.metadataKey)
+  }
+
+  const records = await options.loadLocal()
+  const currentIds = new Set(records.map((record) => record.id))
+
+  for (const record of records) {
+    const localTimestamp = options.timestamp(record)
+    const remoteTimestamp = options.cloudUpdatedAt.get(record.id)
+
+    if (!remoteTimestamp || localTimestamp > remoteTimestamp) {
+      await setDoc(
+        doc(firestore, options.collectionName, record.id),
+        { ...record } as DocumentData,
+      )
+      options.cloudUpdatedAt.set(record.id, localTimestamp)
+    }
+  }
+
+  for (const recordId of previousIds) {
+    if (currentIds.has(recordId)) continue
+    await deleteDoc(doc(firestore, options.collectionName, recordId))
+    options.cloudUpdatedAt.delete(recordId)
+  }
+
+  options.setPreviousIds(currentIds)
+  await saveLastSyncedIds(options.metadataKey, currentIds)
+}
+
+async function scanImportBatches() {
+  const database = await getDatabase()
+  const batches = await database.getAll('passengerImportBatches')
+
+  if (previousLocalImportBatchIds.size === 0) {
+    previousLocalImportBatchIds = await loadLastSyncedIds(
+      LAST_SYNCED_IMPORT_BATCH_IDS_KEY,
+    )
+  }
+
+  const currentIds = new Set<string>(batches.map((batch) => batch.id))
+  for (const batch of batches) {
+    const remoteImportedAt = cloudImportBatchUpdatedAt.get(batch.id)
+    if (!remoteImportedAt || batch.importedAt > remoteImportedAt) {
+      await setDoc(
+        doc(firestore, PASSENGER_IMPORT_BATCHES_COLLECTION, batch.id),
+        batch,
+      )
+      cloudImportBatchUpdatedAt.set(batch.id, batch.importedAt)
+    }
+  }
+
+  for (const batchId of previousLocalImportBatchIds) {
+    if (currentIds.has(batchId)) continue
+    await deleteDoc(doc(firestore, PASSENGER_IMPORT_BATCHES_COLLECTION, batchId))
+    cloudImportBatchUpdatedAt.delete(batchId)
+  }
+
+  previousLocalImportBatchIds = currentIds
+  await saveLastSyncedIds(
+    LAST_SYNCED_IMPORT_BATCH_IDS_KEY,
+    previousLocalImportBatchIds,
+  )
+}
+
+async function scanMetadata() {
+  const database = await getDatabase()
+  const metadata = (await database.getAll('appMetadata')) as AppMetadataRecord[]
   const syncableMetadata = metadata.filter((record) => !isSyncInternalMetadata(record.key))
   const currentMetadataKeys = new Set(syncableMetadata.map((record) => record.key))
+
   for (const record of syncableMetadata) {
     const remoteUpdatedAt = cloudMetadataUpdatedAt.get(record.key)
     if (!remoteUpdatedAt || record.updatedAt > remoteUpdatedAt) {
@@ -485,75 +1191,388 @@ async function scanLocalChanges() {
     await deleteDoc(doc(firestore, METADATA_COLLECTION, key))
     cloudMetadataUpdatedAt.delete(key)
   }
+
   previousLocalMetadataKeys = currentMetadataKeys
 }
 
-function startRemoteListeners() {
-  if (!passengerUnsubscribe) {
-    passengerUnsubscribe = onSnapshot(
-      collection(firestore, PASSENGERS_COLLECTION),
-      { includeMetadataChanges: true },
-      (snapshot) => {
-        void (async () => {
-          const database = await getDatabase()
-          for (const change of snapshot.docChanges()) {
-            const passenger = asPassenger(change.doc.id, change.doc.data())
-            if (change.type === 'removed') {
-              cloudPassengerUpdatedAt.delete(change.doc.id)
-              await deletePassengerLocally(change.doc.id)
-              continue
-            }
-            if (!passenger) continue
-            cloudPassengerUpdatedAt.set(passenger.id, passenger.updatedAt)
-            const local = await database.get('passengers', passenger.id)
-            if (!local || passenger.updatedAt >= local.updatedAt) {
-              await database.put('passengers', passenger)
-            }
-          }
-        })().catch((error) => console.error('Falha ao aplicar passageiros da nuvem:', error))
-      },
-      (error) => console.error('Falha no listener de passageiros:', error),
-    )
-  }
+async function scanLocalChanges() {
+  if (!navigator.onLine) return
+  if (!(await isBootstrappedLocally())) return
 
-  if (!metadataUnsubscribe) {
-    metadataUnsubscribe = onSnapshot(
-      collection(firestore, METADATA_COLLECTION),
-      { includeMetadataChanges: true },
-      (snapshot) => {
-        void (async () => {
-          const database = await getDatabase()
-          for (const change of snapshot.docChanges()) {
-            const record = asMetadata(change.doc.id, change.doc.data())
-            if (!record || isSyncInternalMetadata(record.key)) continue
-            if (change.type === 'removed') {
-              cloudMetadataUpdatedAt.delete(record.key)
-              await database.delete('appMetadata', record.key)
-              continue
-            }
-            cloudMetadataUpdatedAt.set(record.key, record.updatedAt)
-            const local = await database.get('appMetadata', record.key)
-            if (!local || record.updatedAt >= local.updatedAt) {
-              await database.put('appMetadata', record)
-            }
+  const database = await getDatabase()
+
+  await scanPassengers()
+  await scanLuggage()
+
+  await scanSimpleCollection<LuggageMovement>({
+    collectionName: MOVEMENTS_COLLECTION,
+    metadataKey: LAST_SYNCED_MOVEMENT_IDS_KEY,
+    parse: asMovement,
+    timestamp: (movement) => movement.occurredAt,
+    loadLocal: () => database.getAll('movements'),
+    putLocal: (movement) => database.put('movements', movement),
+    deleteLocal: (movementId) => database.delete('movements', movementId),
+    getPreviousIds: () => previousLocalMovementIds,
+    setPreviousIds: (ids) => {
+      previousLocalMovementIds = ids
+    },
+    cloudUpdatedAt: cloudMovementUpdatedAt,
+  })
+
+  await scanSimpleCollection<OperationClosure>({
+    collectionName: OPERATION_CLOSURES_COLLECTION,
+    metadataKey: LAST_SYNCED_CLOSURE_IDS_KEY,
+    parse: asOperationClosure,
+    timestamp: (closure) => closure.finalizedAt,
+    loadLocal: () => database.getAll('operationClosures'),
+    putLocal: (closure) => database.put('operationClosures', closure),
+    deleteLocal: (closureId) => database.delete('operationClosures', closureId),
+    getPreviousIds: () => previousLocalClosureIds,
+    setPreviousIds: (ids) => {
+      previousLocalClosureIds = ids
+    },
+    cloudUpdatedAt: cloudClosureUpdatedAt,
+  })
+
+  await scanSimpleCollection<CityTransfer>({
+    collectionName: CITY_TRANSFERS_COLLECTION,
+    metadataKey: LAST_SYNCED_TRANSFER_IDS_KEY,
+    parse: asCityTransfer,
+    timestamp: (transfer) => transfer.updatedAt,
+    loadLocal: () => database.getAll('cityTransfers'),
+    putLocal: (transfer) => database.put('cityTransfers', transfer),
+    deleteLocal: (transferId) => database.delete('cityTransfers', transferId),
+    getPreviousIds: () => previousLocalTransferIds,
+    setPreviousIds: (ids) => {
+      previousLocalTransferIds = ids
+    },
+    cloudUpdatedAt: cloudTransferUpdatedAt,
+  })
+
+  await scanImportBatches()
+  await scanMetadata()
+}
+
+function startPassengerListener() {
+  if (passengerUnsubscribe) return
+
+  passengerUnsubscribe = onSnapshot(
+    collection(firestore, PASSENGERS_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void (async () => {
+        const database = await getDatabase()
+
+        for (const change of snapshot.docChanges()) {
+          const passenger = asPassenger(change.doc.id, change.doc.data())
+
+          if (change.type === 'removed') {
+            cloudPassengerUpdatedAt.delete(change.doc.id)
+            await deletePassengerLocally(change.doc.id)
+            continue
           }
-        })().catch((error) => console.error('Falha ao aplicar metadados da nuvem:', error))
-      },
-      (error) => console.error('Falha no listener de metadados:', error),
-    )
-  }
+
+          if (!passenger) continue
+          cloudPassengerUpdatedAt.set(passenger.id, passenger.updatedAt)
+
+          const local = await database.get('passengers', passenger.id)
+          if (!local || passenger.updatedAt >= local.updatedAt) {
+            await database.put('passengers', passenger)
+          }
+        }
+      })().catch((error) => console.error('Falha ao aplicar passageiros da nuvem:', error))
+    },
+    (error) => console.error('Falha no listener de passageiros:', error),
+  )
+}
+
+function startLuggageListener() {
+  if (luggageUnsubscribe) return
+
+  luggageUnsubscribe = onSnapshot(
+    collection(firestore, LUGGAGE_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void (async () => {
+        const database = await getDatabase()
+
+        for (const change of snapshot.docChanges()) {
+          const item = asLuggage(change.doc.id, change.doc.data())
+
+          if (change.type === 'removed') {
+            cloudLuggageUpdatedAt.delete(change.doc.id)
+            await deleteLuggageLocally(change.doc.id)
+            continue
+          }
+
+          if (!item) continue
+          cloudLuggageUpdatedAt.set(item.id, item.updatedAt)
+
+          const exactLocal = await database.get('luggage', item.id)
+          if (exactLocal) {
+            if (item.updatedAt >= exactLocal.updatedAt) {
+              await database.put('luggage', item)
+            }
+            continue
+          }
+
+          const codeMatch = await database.getFromIndex(
+            'luggage',
+            'by-code',
+            item.normalizedCode,
+          )
+
+          if (codeMatch && codeMatch.id !== item.id) {
+            const canonicalLuggage =
+              codeMatch.updatedAt > item.updatedAt
+                ? { ...codeMatch, id: item.id }
+                : item
+            await renameLuggageLocally(codeMatch.id, canonicalLuggage)
+            continue
+          }
+
+          await database.put('luggage', item)
+        }
+      })().catch((error) => console.error('Falha ao aplicar bagagens da nuvem:', error))
+    },
+    (error) => console.error('Falha no listener de bagagens:', error),
+  )
+}
+
+function startMovementListener() {
+  if (movementUnsubscribe) return
+
+  movementUnsubscribe = onSnapshot(
+    collection(firestore, MOVEMENTS_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void (async () => {
+        const database = await getDatabase()
+
+        for (const change of snapshot.docChanges()) {
+          const movement = asMovement(change.doc.id, change.doc.data())
+
+          if (change.type === 'removed') {
+            cloudMovementUpdatedAt.delete(change.doc.id)
+            await database.delete('movements', change.doc.id)
+            continue
+          }
+
+          if (!movement) continue
+          cloudMovementUpdatedAt.set(movement.id, movement.occurredAt)
+
+          const local = await database.get('movements', movement.id)
+          if (!local || movement.occurredAt >= local.occurredAt) {
+            await database.put('movements', movement)
+          }
+        }
+      })().catch((error) => console.error('Falha ao aplicar movimentações da nuvem:', error))
+    },
+    (error) => console.error('Falha no listener de movimentações:', error),
+  )
+}
+
+function startClosureListener() {
+  if (closureUnsubscribe) return
+
+  closureUnsubscribe = onSnapshot(
+    collection(firestore, OPERATION_CLOSURES_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void (async () => {
+        const database = await getDatabase()
+
+        for (const change of snapshot.docChanges()) {
+          const closure = asOperationClosure(change.doc.id, change.doc.data())
+
+          if (change.type === 'removed') {
+            cloudClosureUpdatedAt.delete(change.doc.id)
+            await database.delete('operationClosures', change.doc.id)
+            continue
+          }
+
+          if (!closure) continue
+          cloudClosureUpdatedAt.set(closure.id, closure.finalizedAt)
+
+          const local = await database.get('operationClosures', closure.id)
+          if (!local || closure.finalizedAt >= local.finalizedAt) {
+            await database.put('operationClosures', closure)
+          }
+        }
+      })().catch((error) => console.error('Falha ao aplicar fechamentos da nuvem:', error))
+    },
+    (error) => console.error('Falha no listener de fechamentos:', error),
+  )
+}
+
+function startTransferListener() {
+  if (transferUnsubscribe) return
+
+  transferUnsubscribe = onSnapshot(
+    collection(firestore, CITY_TRANSFERS_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void (async () => {
+        const database = await getDatabase()
+
+        for (const change of snapshot.docChanges()) {
+          const transfer = asCityTransfer(change.doc.id, change.doc.data())
+
+          if (change.type === 'removed') {
+            cloudTransferUpdatedAt.delete(change.doc.id)
+            await database.delete('cityTransfers', change.doc.id)
+            continue
+          }
+
+          if (!transfer) continue
+          cloudTransferUpdatedAt.set(transfer.id, transfer.updatedAt)
+
+          const local = await database.get('cityTransfers', transfer.id)
+          if (!local || transfer.updatedAt >= local.updatedAt) {
+            await database.put('cityTransfers', transfer)
+          }
+        }
+      })().catch((error) => console.error('Falha ao aplicar entregas municipais da nuvem:', error))
+    },
+    (error) => console.error('Falha no listener de entregas municipais:', error),
+  )
+}
+
+function startImportBatchListener() {
+  if (importBatchUnsubscribe) return
+
+  importBatchUnsubscribe = onSnapshot(
+    collection(firestore, PASSENGER_IMPORT_BATCHES_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void (async () => {
+        const database = await getDatabase()
+
+        for (const change of snapshot.docChanges()) {
+          const batch = asPassengerImportBatch(change.doc.id, change.doc.data())
+
+          if (change.type === 'removed') {
+            cloudImportBatchUpdatedAt.delete(change.doc.id)
+            await database.delete('passengerImportBatches', change.doc.id)
+            continue
+          }
+
+          if (!batch) continue
+          cloudImportBatchUpdatedAt.set(batch.id, batch.importedAt)
+
+          const exactLocal = await database.get('passengerImportBatches', batch.id)
+          if (exactLocal) {
+            if (batch.importedAt >= exactLocal.importedAt) {
+              await database.put('passengerImportBatches', batch)
+            }
+            continue
+          }
+
+          const fingerprintMatch = await database.getFromIndex(
+            'passengerImportBatches',
+            'by-fingerprint',
+            batch.fingerprint,
+          )
+
+          if (fingerprintMatch && fingerprintMatch.id !== batch.id) {
+            const canonicalBatch =
+              fingerprintMatch.importedAt > batch.importedAt
+                ? { ...fingerprintMatch, id: batch.id }
+                : batch
+            await renameImportBatchLocally(fingerprintMatch.id, canonicalBatch)
+            continue
+          }
+
+          await database.put('passengerImportBatches', batch)
+        }
+      })().catch((error) =>
+        console.error('Falha ao aplicar histórico de importações da nuvem:', error),
+      )
+    },
+    (error) => console.error('Falha no listener do histórico de importações:', error),
+  )
+}
+
+function startMetadataListener() {
+  if (metadataUnsubscribe) return
+
+  metadataUnsubscribe = onSnapshot(
+    collection(firestore, METADATA_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void (async () => {
+        const database = await getDatabase()
+
+        for (const change of snapshot.docChanges()) {
+          const record = asMetadata(change.doc.id, change.doc.data())
+          if (!record || isSyncInternalMetadata(record.key)) continue
+
+          if (change.type === 'removed') {
+            cloudMetadataUpdatedAt.delete(record.key)
+            await database.delete('appMetadata', record.key)
+            continue
+          }
+
+          cloudMetadataUpdatedAt.set(record.key, record.updatedAt)
+          const local = await database.get('appMetadata', record.key)
+
+          if (!local || record.updatedAt >= local.updatedAt) {
+            await database.put('appMetadata', record)
+          }
+        }
+      })().catch((error) => console.error('Falha ao aplicar metadados da nuvem:', error))
+    },
+    (error) => console.error('Falha no listener de metadados:', error),
+  )
+}
+
+function startRemoteListeners() {
+  startPassengerListener()
+  startLuggageListener()
+  startMovementListener()
+  startClosureListener()
+  startTransferListener()
+  startImportBatchListener()
+  startMetadataListener()
 }
 
 function startLocalScanner() {
   if (localScanTimer !== null) return
+
   void scanLocalChanges().catch((error) =>
     console.error('Falha ao sincronizar alterações locais:', error),
   )
+
   localScanTimer = window.setInterval(() => {
     void scanLocalChanges().catch((error) =>
       console.error('Falha ao sincronizar alterações locais:', error),
     )
   }, LOCAL_SCAN_INTERVAL_MS)
+}
+
+async function loadPreviousIds() {
+  const [
+    passengerIds,
+    luggageIds,
+    movementIds,
+    closureIds,
+    transferIds,
+    importBatchIds,
+  ] = await Promise.all([
+    loadLastSyncedIds(LAST_SYNCED_PASSENGER_IDS_KEY),
+    loadLastSyncedIds(LAST_SYNCED_LUGGAGE_IDS_KEY),
+    loadLastSyncedIds(LAST_SYNCED_MOVEMENT_IDS_KEY),
+    loadLastSyncedIds(LAST_SYNCED_CLOSURE_IDS_KEY),
+    loadLastSyncedIds(LAST_SYNCED_TRANSFER_IDS_KEY),
+    loadLastSyncedIds(LAST_SYNCED_IMPORT_BATCH_IDS_KEY),
+  ])
+
+  previousLocalPassengerIds = passengerIds
+  previousLocalLuggageIds = luggageIds
+  previousLocalMovementIds = movementIds
+  previousLocalClosureIds = closureIds
+  previousLocalTransferIds = transferIds
+  previousLocalImportBatchIds = importBatchIds
 }
 
 export async function startCloudSync() {
@@ -565,7 +1584,7 @@ export async function startCloudSync() {
   }
 
   if (await isBootstrappedLocally()) {
-    previousLocalPassengerIds = await loadLastSyncedPassengerIds()
+    await loadPreviousIds()
     startRemoteListeners()
     startLocalScanner()
   }
@@ -575,21 +1594,33 @@ export async function startCloudSync() {
       void ensureBootstrap()
         .then(async () => {
           if (!(await isBootstrappedLocally())) return
-          previousLocalPassengerIds = await loadLastSyncedPassengerIds()
+          await loadPreviousIds()
           startRemoteListeners()
           startLocalScanner()
           await scanLocalChanges()
         })
         .catch((error) => console.error('Falha ao retomar sincronização:', error))
     }
+
     window.addEventListener('online', onlineListener)
   }
 }
 
 export function stopCloudSync() {
   passengerUnsubscribe?.()
-  passengerUnsubscribe = null
+  luggageUnsubscribe?.()
+  movementUnsubscribe?.()
+  closureUnsubscribe?.()
+  transferUnsubscribe?.()
+  importBatchUnsubscribe?.()
   metadataUnsubscribe?.()
+
+  passengerUnsubscribe = null
+  luggageUnsubscribe = null
+  movementUnsubscribe = null
+  closureUnsubscribe = null
+  transferUnsubscribe = null
+  importBatchUnsubscribe = null
   metadataUnsubscribe = null
 
   if (localScanTimer !== null) {
@@ -603,8 +1634,20 @@ export function stopCloudSync() {
   }
 
   previousLocalPassengerIds = new Set()
+  previousLocalLuggageIds = new Set()
+  previousLocalMovementIds = new Set()
+  previousLocalClosureIds = new Set()
+  previousLocalTransferIds = new Set()
+  previousLocalImportBatchIds = new Set()
   previousLocalMetadataKeys = new Set()
+
   cloudPassengerUpdatedAt.clear()
+  cloudLuggageUpdatedAt.clear()
+  cloudMovementUpdatedAt.clear()
+  cloudClosureUpdatedAt.clear()
+  cloudTransferUpdatedAt.clear()
+  cloudImportBatchUpdatedAt.clear()
   cloudMetadataUpdatedAt.clear()
+
   syncStarted = false
 }
