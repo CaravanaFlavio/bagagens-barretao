@@ -11,6 +11,7 @@ import {
   Printer,
   RefreshCcw,
   ShieldCheck,
+  Truck,
   UsersRound,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
@@ -26,6 +27,9 @@ import type {
   TravelPeriod,
 } from '../domain/types'
 import { createContingencyWorkbook } from '../utils/contingencyWorkbook'
+import { createTransportManifestWorkbook } from '../utils/transportManifestWorkbook'
+import { downloadBlobFile } from '../utils/fileDownload'
+import { isNativeAndroidPrint, printCurrentDocument } from '../utils/nativePrint'
 
 const LAST_EXPORT_KEY = 'bagagens-barretao:last-contingency-export'
 
@@ -57,17 +61,6 @@ function readLastExport() {
   } catch {
     return null
   }
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
 }
 
 function movementForOperation(
@@ -128,10 +121,47 @@ function printCityValue(row: ContingencyLuggageRow) {
   return movement ? `✓ ${compactDate(movement.occurredAt)}` : '☐'
 }
 
+interface TransportManifestRow {
+  passenger: ContingencyLuggageRow['passenger']
+  luggageCodes: string[]
+}
+
+function manifestDocumentLabel(passenger: ContingencyLuggageRow['passenger']) {
+  if (!passenger.documentNumber.trim()) return 'Não informado'
+  const prefix = passenger.documentType === 'UNKNOWN' ? 'DOC' : passenger.documentType
+  return `${prefix}: ${passenger.documentNumber}`
+}
+
+function buildTransportManifestRows(snapshot: ContingencySnapshot): TransportManifestRow[] {
+  const grouped = new Map<string, TransportManifestRow>()
+
+  for (const row of snapshot.luggageRows) {
+    const current = grouped.get(row.passenger.id) ?? {
+      passenger: row.passenger,
+      luggageCodes: [],
+    }
+    current.luggageCodes.push(row.luggage.code)
+    grouped.set(row.passenger.id, current)
+  }
+
+  return Array.from(grouped.values())
+    .map((item) => ({
+      ...item,
+      luggageCodes: [...item.luggageCodes].sort((a, b) =>
+        a.localeCompare(b, 'pt-BR', { numeric: true }),
+      ),
+    }))
+    .sort((a, b) => {
+      const city = a.passenger.city.localeCompare(b.passenger.city, 'pt-BR')
+      return city || a.passenger.fullName.localeCompare(b.passenger.fullName, 'pt-BR')
+    })
+}
+
 export function ContingencyPage() {
   const [snapshot, setSnapshot] = useState<ContingencySnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
+  const [generatingManifest, setGeneratingManifest] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const [lastExport, setLastExport] = useState<LastExportMetadata | null>(() => readLastExport())
@@ -171,6 +201,16 @@ export function ContingencyPage() {
     })
   }, [cityFilter, periodFilter, snapshot])
 
+  const transportManifestRows = useMemo(
+    () => (snapshot ? buildTransportManifestRows(snapshot) : []),
+    [snapshot],
+  )
+
+  const transportManifestLuggageCount = useMemo(
+    () => transportManifestRows.reduce((total, row) => total + row.luggageCodes.length, 0),
+    [transportManifestRows],
+  )
+
   const isExportCurrent = Boolean(
     snapshot && lastExport && lastExport.latestDataAt === snapshot.latestDataAt,
   )
@@ -183,7 +223,7 @@ export function ContingencyPage() {
       setSuccessMessage('')
       const filename = `Plano_de_Contingencia_Bagagens_Barretao_${fileTimestamp(snapshot.generatedAt)}.xlsx`
       const blob = await createContingencyWorkbook(snapshot)
-      downloadBlob(blob, filename)
+      const downloadResult = await downloadBlobFile(blob, filename)
       const metadata: LastExportMetadata = {
         generatedAt: new Date().toISOString(),
         latestDataAt: snapshot.latestDataAt,
@@ -193,7 +233,11 @@ export function ContingencyPage() {
       }
       localStorage.setItem(LAST_EXPORT_KEY, JSON.stringify(metadata))
       setLastExport(metadata)
-      setSuccessMessage('Planilha Excel gerada e baixada. Guarde uma cópia fora deste aparelho.')
+      setSuccessMessage(
+        downloadResult.native && downloadResult.displayPath
+          ? `Planilha Excel salva em ${downloadResult.displayPath}.`
+          : 'Planilha Excel gerada e baixada. Guarde uma cópia fora deste aparelho.',
+      )
     } catch (error) {
       setErrorMessage(
         error instanceof Error
@@ -205,17 +249,110 @@ export function ContingencyPage() {
     }
   }
 
+  const handleGenerateTransportManifest = async () => {
+    if (!snapshot || transportManifestRows.length === 0) return
+
+    try {
+      setGeneratingManifest(true)
+      setErrorMessage('')
+      setSuccessMessage('')
+
+      const { blob, fileName } = await createTransportManifestWorkbook(snapshot)
+      const result = await downloadBlobFile(blob, fileName)
+
+      setSuccessMessage(
+        result.native && result.displayPath
+          ? `Manifesto da carreta salvo em ${result.displayPath}.`
+          : 'Manifesto da carreta gerado e baixado.',
+      )
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível gerar o manifesto da carreta.',
+      )
+    } finally {
+      setGeneratingManifest(false)
+    }
+  }
+
+  const handlePrintTransportManifest = () => {
+    if (!snapshot || transportManifestRows.length === 0) return
+
+    const previousTitle = document.title
+    const jobName = `Manifesto_Carreta_Barretao_${fileTimestamp(new Date().toISOString())}`
+    const nativeAndroid = isNativeAndroidPrint()
+    let restored = false
+    let focusTimer: number | undefined
+
+    const restore = () => {
+      if (restored) return
+      restored = true
+      document.title = previousTitle
+      document.body.classList.remove('printing-transport-manifest')
+      window.removeEventListener('afterprint', restore)
+      window.removeEventListener('focus', handleFocus)
+      if (focusTimer !== undefined) window.clearTimeout(focusTimer)
+    }
+
+    const handleFocus = () => {
+      if (!nativeAndroid) return
+      focusTimer = window.setTimeout(restore, 300)
+    }
+
+    document.title = jobName
+    document.body.classList.add('printing-transport-manifest')
+
+    if (nativeAndroid) {
+      window.addEventListener('focus', handleFocus)
+    } else {
+      window.addEventListener('afterprint', restore)
+    }
+
+    window.setTimeout(() => {
+      void printCurrentDocument(jobName).catch((error) => {
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : 'Não foi possível abrir a impressão do manifesto da carreta.',
+        )
+        restore()
+      })
+    }, 120)
+
+    if (nativeAndroid) {
+      window.setTimeout(restore, 120_000)
+    }
+  }
+
   const handlePrint = () => {
     if (!snapshot) return
     const previousTitle = document.title
     const filterName = cityFilter || (periodFilter ? TRAVEL_PERIOD_LABELS[periodFilter] : 'Geral')
-    document.title = `Controle_Manual_Bagagens_${filterName.replace(/\s+/g, '_')}_${fileTimestamp(new Date().toISOString())}`
+    const jobName = `Controle_Manual_Bagagens_${filterName.replace(/\s+/g, '_')}_${fileTimestamp(new Date().toISOString())}`
+    document.title = jobName
+
+    if (isNativeAndroidPrint()) {
+      void printCurrentDocument(jobName)
+        .catch((error) => {
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : 'Não foi possível abrir a impressão do controle manual.',
+          )
+        })
+        .finally(() => {
+          document.title = previousTitle
+        })
+      return
+    }
+
     const restoreTitle = () => {
       document.title = previousTitle
       window.removeEventListener('afterprint', restoreTitle)
     }
     window.addEventListener('afterprint', restoreTitle)
-    window.print()
+    void printCurrentDocument(jobName)
   }
 
   if (loading) {
@@ -278,6 +415,44 @@ export function ContingencyPage() {
               ? `Última geração: ${formatDateTime(lastExport.generatedAt)} · ${lastExport.passengerCount} passageiros · ${lastExport.luggageCount} bagagens.`
               : 'Gere a primeira cópia antes de iniciar uma operação real.'}
           </p>
+        </div>
+      </section>
+
+      <section className="contingency-info-card">
+        <Truck aria-hidden="true" />
+        <div>
+          <strong>Manifesto da carreta</strong>
+          <p>
+            Relação operacional para transporte com nome, CPF/documento, telefone, cidade,
+            período, quantidade de volumes e todos os códigos de lacre. O manifesto usa todas
+            as bagagens cadastradas, sem aplicar os filtros da tela.
+          </p>
+          <small>
+            Gere novamente depois da conferência final da carga para que o documento reflita
+            os registros mais recentes do aplicativo.
+          </small>
+        </div>
+        <div className="contingency-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => void handleGenerateTransportManifest()}
+            disabled={transportManifestRows.length === 0 || generatingManifest}
+          >
+            {generatingManifest
+              ? <LoaderCircle className="spin" aria-hidden="true" />
+              : <Download aria-hidden="true" />}
+            {generatingManifest ? 'Gerando manifesto...' : 'Baixar manifesto Excel'}
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handlePrintTransportManifest}
+            disabled={transportManifestRows.length === 0}
+          >
+            <Printer aria-hidden="true" />
+            Imprimir / Salvar PDF
+          </button>
         </div>
       </section>
 
@@ -362,6 +537,187 @@ export function ContingencyPage() {
             </table>
           </div>
         )}
+      </section>
+
+      <style>{`
+        .transport-manifest-print {
+          display: none;
+        }
+
+        @media print {
+          @page {
+            size: A4 landscape;
+            margin: 8mm;
+          }
+
+          body.printing-transport-manifest .contingency-print:not(.transport-manifest-print) {
+            display: none !important;
+          }
+
+          body.printing-transport-manifest .transport-manifest-print {
+            display: block !important;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table thead {
+            display: table-header-group;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table tr {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th,
+          body.printing-transport-manifest .transport-manifest-table td {
+            padding: 1.5mm 1.6mm;
+            border: 1px solid #aebbc6;
+            vertical-align: top;
+            font-size: 7pt;
+            line-height: 1.22;
+            word-break: break-word;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th {
+            color: #fff;
+            background: #153550;
+            font-weight: 700;
+            text-align: left;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table tbody tr:nth-child(even) td {
+            background: #f6f8fa;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(1),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(1) {
+            width: 8mm;
+            text-align: center;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(2),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(2) {
+            width: 42mm;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(3),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(3) {
+            width: 32mm;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(4),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(4) {
+            width: 27mm;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(5),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(5) {
+            width: 30mm;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(6),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(6) {
+            width: 18mm;
+            text-align: center;
+          }
+
+          body.printing-transport-manifest .transport-manifest-summary {
+            display: flex;
+            gap: 8mm;
+            margin: 0 0 3mm;
+            padding: 2.5mm 3mm;
+            border: 1px solid #cbd5df;
+            background: #f5f7f9;
+          }
+
+          body.printing-transport-manifest .transport-manifest-summary strong,
+          body.printing-transport-manifest .transport-manifest-summary span {
+            display: block;
+          }
+
+          body.printing-transport-manifest .transport-manifest-summary span {
+            color: #425466;
+            font-size: 6.5pt;
+          }
+
+          body.printing-transport-manifest .transport-manifest-note {
+            margin: 2.5mm 0 0;
+            color: #425466;
+            font-size: 6.3pt;
+            line-height: 1.35;
+          }
+        }
+      `}</style>
+
+      <section className="contingency-print transport-manifest-print" aria-hidden="true">
+        <header className="contingency-print__header">
+          <div>
+            <p>Caravana Flávio Gonçalves · Barretão 2026</p>
+            <h1>Manifesto da carreta</h1>
+            <span>Relação de passageiros e volumes cadastrados para transporte</span>
+          </div>
+          <div>
+            <strong>Gerado em</strong>
+            <span>{formatDateTime(snapshot.generatedAt)}</span>
+            <small>{transportManifestRows.length} passageiros · {transportManifestLuggageCount} volumes</small>
+          </div>
+        </header>
+
+        <div className="transport-manifest-summary">
+          <div>
+            <span>Passageiros com bagagem</span>
+            <strong>{transportManifestRows.length}</strong>
+          </div>
+          <div>
+            <span>Total de volumes</span>
+            <strong>{transportManifestLuggageCount}</strong>
+          </div>
+          <div>
+            <span>Última alteração da base</span>
+            <strong>{formatDateTime(snapshot.latestDataAt)}</strong>
+          </div>
+        </div>
+
+        <table className="transport-manifest-table">
+          <thead>
+            <tr>
+              <th>Nº</th>
+              <th>Passageiro</th>
+              <th>CPF / Documento</th>
+              <th>Telefone</th>
+              <th>Cidade · Período</th>
+              <th>Volumes</th>
+              <th>Lacres / Códigos</th>
+            </tr>
+          </thead>
+          <tbody>
+            {transportManifestRows.map((row, index) => (
+              <tr key={`manifest-${row.passenger.id}`}>
+                <td>{index + 1}</td>
+                <td><strong>{row.passenger.fullName}</strong></td>
+                <td>{manifestDocumentLabel(row.passenger)}</td>
+                <td>{row.passenger.phone || 'Não informado'}</td>
+                <td>
+                  {row.passenger.city}<br />
+                  {TRAVEL_PERIOD_LABELS[row.passenger.travelPeriod]}
+                </td>
+                <td><strong>{row.luggageCodes.length}</strong></td>
+                <td>{row.luggageCodes.join(', ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <p className="transport-manifest-note">
+          Documento operacional gerado a partir dos registros do aplicativo. Cada código de
+          lacre identifica um volume vinculado ao respectivo passageiro. Recomenda-se conferir
+          a carga física antes da saída e gerar uma nova versão após qualquer alteração.
+        </p>
       </section>
 
       <section className="contingency-print" aria-hidden="true">

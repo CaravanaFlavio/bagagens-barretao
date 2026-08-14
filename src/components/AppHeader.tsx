@@ -1,4 +1,4 @@
-import { ArrowLeft, BriefcaseBusiness, Wifi, WifiOff } from 'lucide-react'
+import { ArrowLeft, Wifi, WifiOff } from 'lucide-react'
 import { Link, useLocation } from 'react-router'
 
 interface AppHeaderProps {
@@ -18,7 +18,18 @@ export function AppHeader({ isOnline }: AppHeaderProps) {
           </Link>
         ) : (
           <div className="brand-mark" aria-hidden="true">
-            <BriefcaseBusiness />
+            <img
+              src="/icon-192.png"
+              alt=""
+              width={40}
+              height={40}
+              style={{
+                width: '40px',
+                height: '40px',
+                objectFit: 'cover',
+                borderRadius: '11px',
+              }}
+            />
           </div>
         )}
 

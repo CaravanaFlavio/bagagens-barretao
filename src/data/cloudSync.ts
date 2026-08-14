@@ -1,7 +1,9 @@
 import {
+  Bytes,
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocsFromServer,
   onSnapshot,
   setDoc,
@@ -16,7 +18,9 @@ import type {
   OperationClosure,
   Passenger,
   PassengerImportBatch,
+  PhotoRecord,
 } from '../domain/types'
+import { compressPhotoBlob } from '../utils/imageCompression'
 import { getDatabase } from './appDatabase'
 import { firestore } from './firebaseConfig'
 
@@ -26,6 +30,8 @@ const MOVEMENTS_COLLECTION = 'movements'
 const OPERATION_CLOSURES_COLLECTION = 'operationClosures'
 const CITY_TRANSFERS_COLLECTION = 'cityTransfers'
 const PASSENGER_IMPORT_BATCHES_COLLECTION = 'passengerImportBatches'
+const PHOTO_METADATA_COLLECTION = 'photos'
+const PHOTO_FILES_COLLECTION = 'photoFiles'
 const METADATA_COLLECTION = 'appMetadata'
 
 const BOOTSTRAP_METADATA_KEY = 'cloud-sync-bootstrap-v1'
@@ -35,13 +41,29 @@ const LAST_SYNCED_MOVEMENT_IDS_KEY = 'cloud-sync-last-movement-ids-v1'
 const LAST_SYNCED_CLOSURE_IDS_KEY = 'cloud-sync-last-operation-closure-ids-v1'
 const LAST_SYNCED_TRANSFER_IDS_KEY = 'cloud-sync-last-city-transfer-ids-v1'
 const LAST_SYNCED_IMPORT_BATCH_IDS_KEY = 'cloud-sync-last-import-batch-ids-v1'
+const LAST_SYNCED_PHOTO_IDS_KEY = 'cloud-sync-last-photo-ids-v1'
 
 const LOCAL_SCAN_INTERVAL_MS = 1500
+const MAX_CLOUD_PHOTO_BYTES = 350_000
 const FIRESTORE_BATCH_LIMIT = 450
 
 interface AppMetadataRecord {
   key: string
   value: string
+  updatedAt: string
+}
+
+interface CloudPhotoMetadata {
+  id: string
+  kind: PhotoRecord['kind']
+  passengerId: string
+  luggageId: string
+  operationKey?: PhotoRecord['operationKey']
+  mimeType: string
+  sizeBytes: number
+  width: number
+  height: number
+  createdAt: string
   updatedAt: string
 }
 
@@ -71,6 +93,7 @@ let movementUnsubscribe: Unsubscribe | null = null
 let closureUnsubscribe: Unsubscribe | null = null
 let transferUnsubscribe: Unsubscribe | null = null
 let importBatchUnsubscribe: Unsubscribe | null = null
+let photoUnsubscribe: Unsubscribe | null = null
 let metadataUnsubscribe: Unsubscribe | null = null
 
 let localScanTimer: number | null = null
@@ -84,6 +107,7 @@ let previousLocalMovementIds = new Set<string>()
 let previousLocalClosureIds = new Set<string>()
 let previousLocalTransferIds = new Set<string>()
 let previousLocalImportBatchIds = new Set<string>()
+let previousLocalPhotoIds = new Set<string>()
 let previousLocalMetadataKeys = new Set<string>()
 
 const cloudPassengerUpdatedAt = new Map<string, string>()
@@ -92,7 +116,16 @@ const cloudMovementUpdatedAt = new Map<string, string>()
 const cloudClosureUpdatedAt = new Map<string, string>()
 const cloudTransferUpdatedAt = new Map<string, string>()
 const cloudImportBatchUpdatedAt = new Map<string, string>()
+const cloudPhotoUpdatedAt = new Map<string, string>()
 const cloudMetadataUpdatedAt = new Map<string, string>()
+
+let photoSyncTail: Promise<void> = Promise.resolve()
+
+function queuePhotoSync(task: () => Promise<void>) {
+  const run = photoSyncTail.then(task, task)
+  photoSyncTail = run.catch(() => undefined)
+  return run
+}
 
 function now() {
   return new Date().toISOString()
@@ -143,6 +176,45 @@ function asPassengerImportBatch(id: string, data: DocumentData): PassengerImport
   if (typeof data.fingerprint !== 'string') return null
   if (typeof data.importedAt !== 'string') return null
   return { ...data, id } as PassengerImportBatch
+}
+
+function asPhotoMetadata(id: string, data: DocumentData): CloudPhotoMetadata | null {
+  if (!data || typeof data !== 'object') return null
+
+  const kind = data.kind
+  if (
+    kind !== 'PASSENGER_SET' &&
+    kind !== 'LUGGAGE_DETAIL' &&
+    kind !== 'OPERATION_EVIDENCE'
+  ) {
+    return null
+  }
+
+  if (typeof data.passengerId !== 'string') return null
+  if (typeof data.luggageId !== 'string') return null
+  if (typeof data.mimeType !== 'string') return null
+  if (typeof data.sizeBytes !== 'number') return null
+  if (typeof data.width !== 'number') return null
+  if (typeof data.height !== 'number') return null
+  if (typeof data.createdAt !== 'string') return null
+  if (typeof data.updatedAt !== 'string') return null
+  if (data.operationKey !== undefined && typeof data.operationKey !== 'string') {
+    return null
+  }
+
+  return {
+    id,
+    kind,
+    passengerId: data.passengerId,
+    luggageId: data.luggageId,
+    operationKey: data.operationKey as PhotoRecord['operationKey'],
+    mimeType: data.mimeType,
+    sizeBytes: data.sizeBytes,
+    width: data.width,
+    height: data.height,
+    createdAt: data.createdAt,
+    updatedAt: data.updatedAt,
+  }
 }
 
 function asMetadata(id: string, data: DocumentData): AppMetadataRecord | null {
@@ -528,6 +600,7 @@ export async function seedCloudFromThisDevice() {
     closures,
     transfers,
     importBatches,
+    photos,
     metadata,
   ] = await Promise.all([
     database.getAll('passengers'),
@@ -536,6 +609,7 @@ export async function seedCloudFromThisDevice() {
     database.getAll('operationClosures'),
     database.getAll('cityTransfers'),
     database.getAll('passengerImportBatches'),
+    database.getAll('photos'),
     database.getAll('appMetadata') as Promise<AppMetadataRecord[]>,
   ])
 
@@ -550,6 +624,10 @@ export async function seedCloudFromThisDevice() {
   await commitRecords(CITY_TRANSFERS_COLLECTION, transfers)
   await commitRecords(PASSENGER_IMPORT_BATCHES_COLLECTION, importBatches)
   await commitMetadata(metadata)
+
+  for (const photo of photos) {
+    await uploadPhotoToCloud(photo)
+  }
 
   await Promise.all([
     saveLastSyncedIds(
@@ -575,6 +653,10 @@ export async function seedCloudFromThisDevice() {
     saveLastSyncedIds(
       LAST_SYNCED_IMPORT_BATCH_IDS_KEY,
       importBatches.map((batch) => batch.id),
+    ),
+    saveLastSyncedIds(
+      LAST_SYNCED_PHOTO_IDS_KEY,
+      photos.map((photo) => photo.id),
     ),
   ])
 
@@ -1172,6 +1254,203 @@ async function scanImportBatches() {
   )
 }
 
+function photoMetadata(photo: PhotoRecord): DocumentData {
+  return {
+    id: photo.id,
+    kind: photo.kind,
+    passengerId: photo.passengerId,
+    luggageId: photo.luggageId,
+    ...(photo.operationKey ? { operationKey: photo.operationKey } : {}),
+    mimeType: photo.mimeType,
+    sizeBytes: photo.sizeBytes,
+    width: photo.width,
+    height: photo.height,
+    createdAt: photo.createdAt,
+    updatedAt: photo.updatedAt,
+  }
+}
+
+async function preparePhotoForCloud(photo: PhotoRecord): Promise<PhotoRecord> {
+  const compressed = await compressPhotoBlob(photo.blob)
+
+  const prepared: PhotoRecord = {
+    ...photo,
+    blob: compressed.blob,
+    mimeType: compressed.mimeType,
+    sizeBytes: compressed.sizeBytes,
+    width: compressed.width,
+    height: compressed.height,
+  }
+
+  if (prepared.sizeBytes > MAX_CLOUD_PHOTO_BYTES) {
+    throw new Error(
+      `A foto ${photo.id} ficou com ${prepared.sizeBytes} bytes e ultrapassou o limite seguro da nuvem.`,
+    )
+  }
+
+  const changed =
+    prepared.sizeBytes !== photo.sizeBytes ||
+    prepared.mimeType !== photo.mimeType ||
+    prepared.width !== photo.width ||
+    prepared.height !== photo.height
+
+  if (changed) {
+    const database = await getDatabase()
+    await database.put('photos', prepared)
+  }
+
+  return prepared
+}
+
+async function uploadPhotoToCloud(photo: PhotoRecord) {
+  const prepared = await preparePhotoForCloud(photo)
+  const bytes = new Uint8Array(await prepared.blob.arrayBuffer())
+  const batch = writeBatch(firestore)
+
+  batch.set(
+    doc(firestore, PHOTO_METADATA_COLLECTION, prepared.id),
+    photoMetadata(prepared),
+  )
+  batch.set(
+    doc(firestore, PHOTO_FILES_COLLECTION, prepared.id),
+    {
+      photoId: prepared.id,
+      bytes: Bytes.fromUint8Array(bytes),
+      mimeType: prepared.mimeType,
+      sizeBytes: prepared.sizeBytes,
+      updatedAt: prepared.updatedAt,
+    },
+  )
+
+  await batch.commit()
+}
+
+async function deletePhotoFromCloud(photoId: string) {
+  await Promise.all([
+    deleteDoc(doc(firestore, PHOTO_METADATA_COLLECTION, photoId)),
+    deleteDoc(doc(firestore, PHOTO_FILES_COLLECTION, photoId)),
+  ])
+}
+
+function photoNeedsCloudRefresh(
+  local: PhotoRecord,
+  remote: CloudPhotoMetadata,
+) {
+  if (remote.updatedAt > local.updatedAt) return true
+  if (remote.updatedAt < local.updatedAt) return false
+
+  return (
+    remote.sizeBytes !== local.sizeBytes ||
+    remote.mimeType !== local.mimeType ||
+    remote.width !== local.width ||
+    remote.height !== local.height
+  )
+}
+
+async function downloadPhotoFromCloud(metadata: CloudPhotoMetadata) {
+  const fileSnapshot = await getDoc(
+    doc(firestore, PHOTO_FILES_COLLECTION, metadata.id),
+  )
+
+  if (!fileSnapshot.exists()) {
+    throw new Error(`Os bytes da foto ${metadata.id} ainda não estão disponíveis na nuvem.`)
+  }
+
+  const data = fileSnapshot.data()
+  const cloudBytes = data.bytes
+  if (!cloudBytes || typeof cloudBytes.toUint8Array !== 'function') {
+    throw new Error(`O arquivo da foto ${metadata.id} está em formato inválido.`)
+  }
+
+  const sourceBytes = cloudBytes.toUint8Array() as Uint8Array
+  const copiedBytes = new Uint8Array(sourceBytes.byteLength)
+  copiedBytes.set(sourceBytes)
+
+  if (copiedBytes.byteLength > MAX_CLOUD_PHOTO_BYTES) {
+    throw new Error(
+      `A foto ${metadata.id} ultrapassa o limite seguro de ${MAX_CLOUD_PHOTO_BYTES} bytes.`,
+    )
+  }
+
+  const mimeType =
+    typeof data.mimeType === 'string' && data.mimeType.startsWith('image/')
+      ? data.mimeType
+      : metadata.mimeType
+
+  const photo: PhotoRecord = {
+    id: metadata.id,
+    kind: metadata.kind,
+    passengerId: metadata.passengerId,
+    luggageId: metadata.luggageId,
+    ...(metadata.operationKey ? { operationKey: metadata.operationKey } : {}),
+    blob: new Blob([copiedBytes.buffer], { type: mimeType }),
+    mimeType,
+    sizeBytes: copiedBytes.byteLength,
+    width: metadata.width,
+    height: metadata.height,
+    createdAt: metadata.createdAt,
+    updatedAt: metadata.updatedAt,
+  }
+
+  const database = await getDatabase()
+  await database.put('photos', photo)
+
+  previousLocalPhotoIds.add(photo.id)
+  cloudPhotoUpdatedAt.set(photo.id, photo.updatedAt)
+}
+
+async function scanPhotosNow() {
+  const database = await getDatabase()
+
+  if (previousLocalPhotoIds.size === 0) {
+    previousLocalPhotoIds = await loadLastSyncedIds(LAST_SYNCED_PHOTO_IDS_KEY)
+  }
+
+  const photoIds = (await database.getAllKeys('photos')).map(String)
+  const currentIds = new Set(photoIds)
+  const syncedIds = new Set(previousLocalPhotoIds)
+
+  for (const photoId of currentIds) {
+    if (syncedIds.has(photoId)) continue
+
+    const photo = await database.get('photos', photoId)
+    if (!photo) continue
+
+    const remoteUpdatedAt = cloudPhotoUpdatedAt.get(photoId)
+    if (remoteUpdatedAt && remoteUpdatedAt >= photo.updatedAt) {
+      syncedIds.add(photoId)
+      continue
+    }
+
+    try {
+      await uploadPhotoToCloud(photo)
+      cloudPhotoUpdatedAt.set(photoId, photo.updatedAt)
+      syncedIds.add(photoId)
+    } catch (error) {
+      console.error(`Falha ao enviar a foto ${photoId} para a nuvem:`, error)
+    }
+  }
+
+  for (const photoId of previousLocalPhotoIds) {
+    if (currentIds.has(photoId)) continue
+
+    try {
+      await deletePhotoFromCloud(photoId)
+      cloudPhotoUpdatedAt.delete(photoId)
+      syncedIds.delete(photoId)
+    } catch (error) {
+      console.error(`Falha ao remover a foto ${photoId} da nuvem:`, error)
+    }
+  }
+
+  previousLocalPhotoIds = syncedIds
+  await saveLastSyncedIds(LAST_SYNCED_PHOTO_IDS_KEY, previousLocalPhotoIds)
+}
+
+async function scanPhotos() {
+  await queuePhotoSync(scanPhotosNow)
+}
+
 async function scanMetadata() {
   const database = await getDatabase()
   const metadata = (await database.getAll('appMetadata')) as AppMetadataRecord[]
@@ -1250,6 +1529,7 @@ async function scanLocalChanges() {
   })
 
   await scanImportBatches()
+  await scanPhotos()
   await scanMetadata()
 }
 
@@ -1493,6 +1773,78 @@ function startImportBatchListener() {
   )
 }
 
+function startPhotoListener() {
+  if (photoUnsubscribe) return
+
+  photoUnsubscribe = onSnapshot(
+    collection(firestore, PHOTO_METADATA_COLLECTION),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      void queuePhotoSync(async () => {
+        const database = await getDatabase()
+        let syncedIdsChanged = false
+
+        for (const change of snapshot.docChanges()) {
+          const metadata = asPhotoMetadata(change.doc.id, change.doc.data())
+
+          if (change.type === 'removed') {
+            cloudPhotoUpdatedAt.delete(change.doc.id)
+
+            if (previousLocalPhotoIds.has(change.doc.id)) {
+              await database.delete('photos', change.doc.id)
+              previousLocalPhotoIds.delete(change.doc.id)
+              syncedIdsChanged = true
+            }
+            continue
+          }
+
+          if (!metadata) continue
+          cloudPhotoUpdatedAt.set(metadata.id, metadata.updatedAt)
+
+          const local = await database.get('photos', metadata.id)
+
+          if (!local && previousLocalPhotoIds.has(metadata.id)) {
+            await deletePhotoFromCloud(metadata.id)
+            cloudPhotoUpdatedAt.delete(metadata.id)
+            previousLocalPhotoIds.delete(metadata.id)
+            syncedIdsChanged = true
+            continue
+          }
+
+          if (local && local.updatedAt > metadata.updatedAt) {
+            continue
+          }
+
+          if (!local || photoNeedsCloudRefresh(local, metadata)) {
+            try {
+              await downloadPhotoFromCloud(metadata)
+              syncedIdsChanged = true
+            } catch (error) {
+              console.error(`Falha ao baixar a foto ${metadata.id} da nuvem:`, error)
+            }
+            continue
+          }
+
+          if (!previousLocalPhotoIds.has(metadata.id)) {
+            previousLocalPhotoIds.add(metadata.id)
+            syncedIdsChanged = true
+          }
+        }
+
+        if (syncedIdsChanged) {
+          await saveLastSyncedIds(
+            LAST_SYNCED_PHOTO_IDS_KEY,
+            previousLocalPhotoIds,
+          )
+        }
+      }).catch((error) =>
+        console.error('Falha ao aplicar fotos da nuvem:', error),
+      )
+    },
+    (error) => console.error('Falha no listener de fotos:', error),
+  )
+}
+
 function startMetadataListener() {
   if (metadataUnsubscribe) return
 
@@ -1533,6 +1885,7 @@ function startRemoteListeners() {
   startClosureListener()
   startTransferListener()
   startImportBatchListener()
+  startPhotoListener()
   startMetadataListener()
 }
 
@@ -1558,6 +1911,7 @@ async function loadPreviousIds() {
     closureIds,
     transferIds,
     importBatchIds,
+    photoIds,
   ] = await Promise.all([
     loadLastSyncedIds(LAST_SYNCED_PASSENGER_IDS_KEY),
     loadLastSyncedIds(LAST_SYNCED_LUGGAGE_IDS_KEY),
@@ -1565,6 +1919,7 @@ async function loadPreviousIds() {
     loadLastSyncedIds(LAST_SYNCED_CLOSURE_IDS_KEY),
     loadLastSyncedIds(LAST_SYNCED_TRANSFER_IDS_KEY),
     loadLastSyncedIds(LAST_SYNCED_IMPORT_BATCH_IDS_KEY),
+    loadLastSyncedIds(LAST_SYNCED_PHOTO_IDS_KEY),
   ])
 
   previousLocalPassengerIds = passengerIds
@@ -1573,6 +1928,7 @@ async function loadPreviousIds() {
   previousLocalClosureIds = closureIds
   previousLocalTransferIds = transferIds
   previousLocalImportBatchIds = importBatchIds
+  previousLocalPhotoIds = photoIds
 }
 
 export async function startCloudSync() {
@@ -1613,6 +1969,7 @@ export function stopCloudSync() {
   closureUnsubscribe?.()
   transferUnsubscribe?.()
   importBatchUnsubscribe?.()
+  photoUnsubscribe?.()
   metadataUnsubscribe?.()
 
   passengerUnsubscribe = null
@@ -1621,6 +1978,7 @@ export function stopCloudSync() {
   closureUnsubscribe = null
   transferUnsubscribe = null
   importBatchUnsubscribe = null
+  photoUnsubscribe = null
   metadataUnsubscribe = null
 
   if (localScanTimer !== null) {
@@ -1639,6 +1997,7 @@ export function stopCloudSync() {
   previousLocalClosureIds = new Set()
   previousLocalTransferIds = new Set()
   previousLocalImportBatchIds = new Set()
+  previousLocalPhotoIds = new Set()
   previousLocalMetadataKeys = new Set()
 
   cloudPassengerUpdatedAt.clear()
@@ -1647,7 +2006,9 @@ export function stopCloudSync() {
   cloudClosureUpdatedAt.clear()
   cloudTransferUpdatedAt.clear()
   cloudImportBatchUpdatedAt.clear()
+  cloudPhotoUpdatedAt.clear()
   cloudMetadataUpdatedAt.clear()
 
+  photoSyncTail = Promise.resolve()
   syncStarted = false
 }

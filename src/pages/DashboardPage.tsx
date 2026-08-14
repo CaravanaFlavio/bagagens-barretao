@@ -283,6 +283,7 @@ export function DashboardPage({ isOnline }: DashboardPageProps) {
           />
           <QuickCard title="Pendências" description="Pendências do fluxo de bagagens" path="/pendencias" icon={<AlertTriangle />} badge={summary.pendingCount} />
           <QuickCard title="Contingência" description="Planilha para controle manual" path="/contingencia" icon={<FileSpreadsheet />} />
+          <QuickCard title="Placas por cidade" description="A4 por cidade e semana" path="/placas-cidades" icon={<MapPinned />} />
           <QuickCard title="Backup" description="Cópias e restauração" path="/backup" icon={<Cloud />} />
           <QuickCard title="Configurações" description="Cidades e setores" path="/configuracoes" icon={<Settings />} />
         </div>

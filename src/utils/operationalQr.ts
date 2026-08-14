@@ -1,4 +1,5 @@
 import { BrowserQRCodeSvgWriter } from '@zxing/browser'
+import { downloadBlobFile } from './fileDownload'
 
 const PASSENGER_PREFIX = 'BB26|P|'
 const LUGGAGE_PREFIX = 'BB26|L|'
@@ -83,7 +84,6 @@ export function luggageQrValue(luggageId: string, info?: LuggageQrInfo) {
 export function parseOperationalQr(value: string): OperationalQrPayload {
   const trimmed = value.trim()
 
-  // Compatibilidade com QRs antigos: BB26|P|... e BB26|L|...
   const passengerMatch = trimmed.match(/BB26\|P\|([^\s\r\n]+)/)
   if (passengerMatch?.[1]) {
     return { kind: 'PASSENGER', id: passengerMatch[1] }
@@ -94,8 +94,6 @@ export function parseOperationalQr(value: string): OperationalQrPayload {
     return { kind: 'LUGGAGE', id: luggageMatch[1] }
   }
 
-  // Novo formato compacto. Mantém dados básicos legíveis fora do app,
-  // mas reduz bastante a densidade do QR impresso.
   const compactPassengerMatch = trimmed.match(/(?:^|\r?\n)P:([A-Za-z0-9_-]+)/)
   if (compactPassengerMatch?.[1]) {
     return {
@@ -124,8 +122,6 @@ export function createQrSvgDataUrl(value: string, size = 720) {
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
   svg.setAttribute('shape-rendering', 'crispEdges')
 
-  // O fundo branco faz parte do próprio QR. Assim, baixar e imprimir
-  // usam exatamente a mesma arte, sem depender do fundo da página.
   const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
   background.setAttribute('x', '0')
   background.setAttribute('y', '0')
@@ -138,12 +134,18 @@ export function createQrSvgDataUrl(value: string, size = 720) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(serialized)}`
 }
 
-export function downloadQrSvg(value: string, fileName: string) {
+export async function downloadQrSvg(value: string, fileName: string) {
   const url = createQrSvgDataUrl(value)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName.endsWith('.svg') ? fileName : `${fileName}.svg`
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+  const commaIndex = url.indexOf(',')
+  if (commaIndex < 0) {
+    throw new Error('Não foi possível preparar o QR para download.')
+  }
+
+  const svgText = decodeURIComponent(url.slice(commaIndex + 1))
+  const blob = new Blob([svgText], {
+    type: 'image/svg+xml;charset=utf-8',
+  })
+
+  const finalName = fileName.endsWith('.svg') ? fileName : `${fileName}.svg`
+  return downloadBlobFile(blob, finalName)
 }

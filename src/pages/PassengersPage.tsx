@@ -74,6 +74,8 @@ import { compressPhoto } from '../utils/imageCompression'
 import { parsePassengerUpdatePdfs } from '../utils/passengerPdfImport'
 import { parsePassengerUpdateExcel } from '../utils/passengerExcelImport'
 import { createPassengerWorkbook } from '../utils/passengerWorkbook'
+import { downloadBlobFile } from '../utils/fileDownload'
+import { isNativeAndroidPrint, printCurrentDocument } from '../utils/nativePrint'
 import {
   createQrSvgDataUrl,
   downloadQrSvg,
@@ -494,23 +496,63 @@ export function PassengersPage() {
     if (labelPrintItems.length === 0 || !labelPrintTitle) return
 
     const previousTitle = document.title
+    const nativeAndroid = isNativeAndroidPrint()
     document.body.classList.add('printing-qr-labels')
     document.title = labelPrintTitle
 
+    let restored = false
+    let focusRestoreTimer: number | undefined
+
     const restore = () => {
+      if (restored) return
+      restored = true
       document.title = previousTitle
       document.body.classList.remove('printing-qr-labels')
       setLabelPrintItems([])
       setLabelPrintTitle('')
       window.removeEventListener('afterprint', restore)
+      window.removeEventListener('focus', handleFocus)
+      if (focusRestoreTimer !== undefined) {
+        window.clearTimeout(focusRestoreTimer)
+      }
     }
 
-    window.addEventListener('afterprint', restore)
-    const timeoutId = window.setTimeout(() => window.print(), 80)
+    const handleFocus = () => {
+      if (!nativeAndroid) return
+      focusRestoreTimer = window.setTimeout(restore, 250)
+    }
+
+    if (nativeAndroid) {
+      window.addEventListener('focus', handleFocus)
+    } else {
+      window.addEventListener('afterprint', restore)
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void printCurrentDocument(labelPrintTitle).catch((error) => {
+        setPageError(
+          error instanceof Error
+            ? error.message
+            : 'Não foi possível abrir a impressão das etiquetas.',
+        )
+        restore()
+      })
+    }, 120)
+
+    const safetyTimeoutId = nativeAndroid
+      ? window.setTimeout(restore, 120_000)
+      : undefined
 
     return () => {
       window.clearTimeout(timeoutId)
+      if (safetyTimeoutId !== undefined) {
+        window.clearTimeout(safetyTimeoutId)
+      }
       window.removeEventListener('afterprint', restore)
+      window.removeEventListener('focus', handleFocus)
+      if (focusRestoreTimer !== undefined) {
+        window.clearTimeout(focusRestoreTimer)
+      }
       document.title = previousTitle
       document.body.classList.remove('printing-qr-labels')
     }
@@ -596,7 +638,7 @@ export function PassengersPage() {
     )
   }
 
-  const downloadSelectedQr = () => {
+  const downloadSelectedQr = async () => {
     const items = buildBulkLabelItems(true)
     if (items.length !== 1) return
 
@@ -605,7 +647,22 @@ export function PassengersPage() {
       ? `Passageiro_${item.passengerName}`
       : `Volume_${item.passengerName}_${item.luggageCode ?? item.id}`
 
-    downloadQrSvg(item.qrValue, `QR_Barretao_2026_${fileNamePart(suffix)}.svg`)
+    try {
+      setPageError('')
+      const result = await downloadQrSvg(
+        item.qrValue,
+        `QR_Barretao_2026_${fileNamePart(suffix)}.svg`,
+      )
+      if (result.native && result.displayPath) {
+        window.alert(`QR salvo no celular em ${result.displayPath}`)
+      }
+    } catch (error) {
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível baixar o QR selecionado.',
+      )
+    }
   }
 
   const openNewPassenger = () => {
@@ -772,14 +829,10 @@ export function PassengersPage() {
       const blob = new Blob([buffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       })
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = fileName
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+      const downloadResult = await downloadBlobFile(blob, fileName)
+      if (downloadResult.native && downloadResult.displayPath) {
+        window.alert(`Planilha salva no celular em ${downloadResult.displayPath}`)
+      }
     } catch (error) {
       setPageError(
         error instanceof Error
@@ -838,14 +891,30 @@ export function PassengersPage() {
       nameParts.push('Completa')
     }
 
-    document.title = nameParts.filter(Boolean).join('_')
+    const jobName = nameParts.filter(Boolean).join('_')
+    document.title = jobName
+
+    if (isNativeAndroidPrint()) {
+      void printCurrentDocument(jobName)
+        .catch((error) => {
+          setPageError(
+            error instanceof Error
+              ? error.message
+              : 'Não foi possível abrir a impressão da lista.',
+          )
+        })
+        .finally(() => {
+          document.title = previousTitle
+        })
+      return
+    }
 
     const restoreTitle = () => {
       document.title = previousTitle
       window.removeEventListener('afterprint', restoreTitle)
     }
     window.addEventListener('afterprint', restoreTitle)
-    window.print()
+    void printCurrentDocument(jobName)
   }
 
   const handleDeletePassenger = async () => {
@@ -1430,7 +1499,7 @@ export function PassengersPage() {
               type="button"
               className="secondary-button"
               disabled={selectedVisibleCount !== 1}
-              onClick={downloadSelectedQr}
+              onClick={() => void downloadSelectedQr()}
               title={selectedVisibleCount === 1 ? 'Baixar o QR selecionado em SVG' : 'Selecione somente um item para baixar o QR'}
             >
               <Download aria-hidden="true" />

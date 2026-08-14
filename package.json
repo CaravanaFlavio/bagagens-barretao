@@ -13,6 +13,7 @@
     "@capacitor/android": "^8.4.2",
     "@capacitor/barcode-scanner": "^3.1.0",
     "@capacitor/core": "^8.4.2",
+    "@capacitor/filesystem": "^8.1.2",
     "@zxing/browser": "^0.2.1",
     "exceljs": "^4.4.0",
     "firebase": "^12.17.1",
