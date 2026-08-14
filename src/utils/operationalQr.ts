@@ -3,7 +3,6 @@ import { downloadBlobFile } from './fileDownload'
 
 const PASSENGER_PREFIX = 'BB26|P|'
 const LUGGAGE_PREFIX = 'BB26|L|'
-const COMPACT_PASSENGER_PREFIX = 'P:'
 const COMPACT_LUGGAGE_PREFIX = 'L:'
 
 export interface PassengerQrInfo {
@@ -52,17 +51,11 @@ function restoreRecordId(value: string, prefix: 'passenger' | 'luggage') {
 }
 
 export function passengerQrValue(passengerId: string, info?: PassengerQrInfo) {
-  const technicalId = `${PASSENGER_PREFIX}${passengerId}`
-  if (!info) return technicalId
-
-  return [
-    'BARRETAO 2026',
-    'PASSAGEIRO',
-    cleanLine(info.fullName),
-    cleanLine(info.city),
-    `${compactPeriod(info.travelPeriod)} | ${compactBus(info.busType)}`,
-    `${COMPACT_PASSENGER_PREFIX}${compactRecordId(passengerId, 'passenger')}`,
-  ].join('\n')
+  void info
+  // O QR do passageiro deve ser imutável. Ele carrega somente o identificador
+  // interno permanente; nome, cidade, período, ônibus e demais dados permanecem
+  // no banco e podem ser atualizados sem alterar o QR já impresso.
+  return `${PASSENGER_PREFIX}${passengerId}`
 }
 
 export function luggageQrValue(luggageId: string, info?: LuggageQrInfo) {
