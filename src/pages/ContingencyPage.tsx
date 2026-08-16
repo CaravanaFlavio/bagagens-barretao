@@ -126,6 +126,21 @@ interface TransportManifestRow {
   luggageCodes: string[]
 }
 
+function isInternalControlCode(code: string) {
+  return code.startsWith('SEM-LACRE-')
+}
+
+function manifestPhysicalIdentification(codes: string[]) {
+  const physicalCodes = codes.filter((code) => !isInternalControlCode(code))
+  return physicalCodes.length > 0 ? physicalCodes.join(', ') : 'Sem identificação física'
+}
+
+function manifestInternalControlLabel(codes: string[]) {
+  const internalCount = codes.filter(isInternalControlCode).length
+  if (internalCount === 0) return 'Identificação física informada'
+  return `${internalCount} ${internalCount === 1 ? 'volume sem lacre físico' : 'volumes sem lacre físico'} · controle interno no aplicativo`
+}
+
 function manifestDocumentLabel(passenger: ContingencyLuggageRow['passenger']) {
   if (!passenger.documentNumber.trim()) return 'Não informado'
   const prefix = passenger.documentType === 'UNKNOWN' ? 'DOC' : passenger.documentType
@@ -423,13 +438,14 @@ export function ContingencyPage() {
         <div>
           <strong>Manifesto da carreta</strong>
           <p>
-            Relação operacional para transporte com nome, CPF/documento, telefone, cidade,
-            período, quantidade de volumes e todos os códigos de lacre. O manifesto usa todas
-            as bagagens cadastradas, sem aplicar os filtros da tela.
+            Registro operacional para transporte com nome, CPF/documento, telefone, cidade,
+            período, quantidade de volumes cadastrados e identificação física quando houver.
+            Códigos internos do aplicativo não são apresentados como lacres físicos.
           </p>
           <small>
             Gere novamente depois da conferência final da carga para que o documento reflita
-            os registros mais recentes do aplicativo.
+            os registros mais recentes do aplicativo. A fotografia do conjunto, quando cadastrada,
+            permanece no aplicativo como referência visual.
           </small>
         </div>
         <div className="contingency-actions">
@@ -596,34 +612,44 @@ export function ContingencyPage() {
 
           body.printing-transport-manifest .transport-manifest-table th:nth-child(1),
           body.printing-transport-manifest .transport-manifest-table td:nth-child(1) {
-            width: 8mm;
+            width: 7mm;
             text-align: center;
           }
 
           body.printing-transport-manifest .transport-manifest-table th:nth-child(2),
           body.printing-transport-manifest .transport-manifest-table td:nth-child(2) {
-            width: 42mm;
+            width: 38mm;
           }
 
           body.printing-transport-manifest .transport-manifest-table th:nth-child(3),
           body.printing-transport-manifest .transport-manifest-table td:nth-child(3) {
-            width: 32mm;
+            width: 29mm;
           }
 
           body.printing-transport-manifest .transport-manifest-table th:nth-child(4),
           body.printing-transport-manifest .transport-manifest-table td:nth-child(4) {
-            width: 27mm;
+            width: 25mm;
           }
 
           body.printing-transport-manifest .transport-manifest-table th:nth-child(5),
           body.printing-transport-manifest .transport-manifest-table td:nth-child(5) {
-            width: 30mm;
+            width: 29mm;
           }
 
           body.printing-transport-manifest .transport-manifest-table th:nth-child(6),
           body.printing-transport-manifest .transport-manifest-table td:nth-child(6) {
             width: 18mm;
             text-align: center;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(7),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(7) {
+            width: 48mm;
+          }
+
+          body.printing-transport-manifest .transport-manifest-table th:nth-child(8),
+          body.printing-transport-manifest .transport-manifest-table td:nth-child(8) {
+            width: 45mm;
           }
 
           body.printing-transport-manifest .transport-manifest-summary {
@@ -659,7 +685,7 @@ export function ContingencyPage() {
           <div>
             <p>Caravana Flávio Gonçalves · Barretão 2026</p>
             <h1>Manifesto da carreta</h1>
-            <span>Relação de passageiros e volumes cadastrados para transporte</span>
+            <span>Registro Operacional de Vinculação de Bagagens</span>
           </div>
           <div>
             <strong>Gerado em</strong>
@@ -691,8 +717,9 @@ export function ContingencyPage() {
               <th>CPF / Documento</th>
               <th>Telefone</th>
               <th>Cidade · Período</th>
-              <th>Volumes</th>
-              <th>Lacres / Códigos</th>
+              <th>Volumes cadastrados</th>
+              <th>Identificação física quando houver</th>
+              <th>Controle interno</th>
             </tr>
           </thead>
           <tbody>
@@ -707,16 +734,22 @@ export function ContingencyPage() {
                   {TRAVEL_PERIOD_LABELS[row.passenger.travelPeriod]}
                 </td>
                 <td><strong>{row.luggageCodes.length}</strong></td>
-                <td>{row.luggageCodes.join(', ')}</td>
+                <td>{manifestPhysicalIdentification(row.luggageCodes)}</td>
+                <td>{manifestInternalControlLabel(row.luggageCodes)}</td>
               </tr>
             ))}
           </tbody>
         </table>
 
         <p className="transport-manifest-note">
-          Documento operacional gerado a partir dos registros do aplicativo. Cada código de
-          lacre identifica um volume vinculado ao respectivo passageiro. Recomenda-se conferir
-          a carga física antes da saída e gerar uma nova versão após qualquer alteração.
+          Registro operacional gerado a partir dos dados do aplicativo. A vinculação principal é feita
+          pelo passageiro, documento e quantidade de volumes cadastrados; a identificação física é
+          informada somente quando existir. Registros “Sem lacre físico” usam controle interno e não
+          significam que exista etiqueta ou lacre no volume. A fotografia do conjunto, quando cadastrada,
+          permanece no aplicativo como referência visual. Este documento não substitui documentos fiscais,
+          autorizações, exigências legais/regulatórias aplicáveis ao transporte nem constitui termo de isenção
+          de responsabilidade. Recomenda-se conferir a carga física antes da saída e gerar nova versão após
+          qualquer alteração.
         </p>
       </section>
 

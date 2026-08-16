@@ -30,6 +30,25 @@ function documentLabel(passenger: Passenger) {
   return `${prefix}: ${passenger.documentNumber}`
 }
 
+function isInternalControlCode(code: string) {
+  return code.startsWith('SEM-LACRE-')
+}
+
+function physicalIdentification(codes: string[]) {
+  const physicalCodes = codes.filter((code) => !isInternalControlCode(code))
+  return physicalCodes.length > 0 ? physicalCodes.join(', ') : 'Sem identificação física'
+}
+
+function internalControlLabel(codes: string[]) {
+  const internalCount = codes.filter(isInternalControlCode).length
+  if (internalCount === 0) return 'Identificação física informada'
+  return `${internalCount} ${internalCount === 1 ? 'volume sem lacre físico' : 'volumes sem lacre físico'} · controle interno no aplicativo`
+}
+
+function volumePhysicalIdentification(code: string) {
+  return isInternalControlCode(code) ? 'Sem lacre físico' : code
+}
+
 function passengerRows(snapshot: ContingencySnapshot) {
   const grouped = new Map<string, {
     passenger: Passenger
@@ -101,8 +120,8 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
   const { default: ExcelJSRuntime } = await import('exceljs')
   const workbook = new ExcelJSRuntime.Workbook()
   workbook.creator = 'Caravana Flávio Gonçalves'
-  workbook.title = 'Manifesto da carreta · Barretão 2026'
-  workbook.subject = 'Relação operacional de passageiros e bagagens'
+  workbook.title = 'Manifesto da carreta · Registro Operacional de Vinculação de Bagagens · Barretão 2026'
+  workbook.subject = 'Registro operacional de vinculação de passageiros e bagagens transportadas'
   workbook.created = new Date()
   workbook.modified = new Date()
 
@@ -134,21 +153,21 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
   applyTitle(
     manifest,
     'MANIFESTO DA CARRETA · BARRETÃO 2026',
-    `Relação operacional gerada em ${formatDateTime(snapshot.generatedAt)}. Confira a carga física antes da saída e gere uma nova versão após qualquer alteração.`,
-    8,
+    `Registro Operacional de Vinculação de Bagagens · gerado em ${formatDateTime(snapshot.generatedAt)}. A identificação física é informada somente quando existir; registros sem lacre permanecem vinculados ao passageiro pelo controle interno do aplicativo.`,
+    9,
   )
 
   manifest.getCell('A4').value = 'Passageiros com bagagem'
   manifest.getCell('B4').value = passengers.length
   manifest.getCell('D4').value = 'Total de volumes'
   manifest.getCell('E4').value = totalLuggage
-  manifest.getCell('G4').value = 'Última alteração'
-  manifest.getCell('H4').value = formatDateTime(snapshot.latestDataAt)
+  manifest.getCell('H4').value = 'Última alteração'
+  manifest.getCell('I4').value = formatDateTime(snapshot.latestDataAt)
 
-  for (const ref of ['A4', 'D4', 'G4']) {
+  for (const ref of ['A4', 'D4', 'H4']) {
     manifest.getCell(ref).font = { bold: true, color: { argb: MUTED } }
   }
-  for (const ref of ['B4', 'E4', 'H4']) {
+  for (const ref of ['B4', 'E4', 'I4']) {
     manifest.getCell(ref).font = { bold: true, color: { argb: NAVY }, size: 12 }
   }
 
@@ -160,10 +179,11 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
     'Telefone',
     'Cidade',
     'Período',
-    'Volumes',
-    'Lacres / Códigos',
+    'Volumes cadastrados',
+    'Identificação física quando houver',
+    'Controle interno',
   ])
-  applyHeader(manifest, 6, 8)
+  applyHeader(manifest, 6, 9)
 
   passengers.forEach((item, index) => {
     const row = manifest.addRow([
@@ -174,13 +194,14 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
       item.passenger.city,
       TRAVEL_PERIOD_LABELS[item.passenger.travelPeriod],
       item.luggageCodes.length,
-      item.luggageCodes.join(', '),
+      physicalIdentification(item.luggageCodes),
+      internalControlLabel(item.luggageCodes),
     ])
 
     row.height = item.luggageCodes.length > 5 ? 34 : 26
     row.alignment = { vertical: 'top', wrapText: true }
 
-    for (let column = 1; column <= 8; column += 1) {
+    for (let column = 1; column <= 9; column += 1) {
       const cell = row.getCell(column)
       cell.font = { size: 9, color: { argb: TEXT } }
       cell.border = {
@@ -201,13 +222,13 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
     }
   })
 
-  ;[7, 34, 24, 18, 22, 17, 10, 54].forEach((width, index) => {
+  ;[7, 32, 23, 18, 20, 16, 14, 40, 38].forEach((width, index) => {
     manifest.getColumn(index + 1).width = width
   })
 
   manifest.autoFilter = {
     from: { row: 6, column: 1 },
-    to: { row: Math.max(manifest.rowCount, 6), column: 8 },
+    to: { row: Math.max(manifest.rowCount, 6), column: 9 },
   }
   manifest.headerFooter.oddFooter =
     '&LCaravana Flávio Gonçalves&CManifesto da carreta&R&P de &N'
@@ -226,13 +247,14 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
   applyTitle(
     volumes,
     'RELAÇÃO INDIVIDUAL DOS VOLUMES',
-    'Uma linha por bagagem, permitindo conferir o código do lacre e o passageiro responsável.',
-    8,
+    'Uma linha por registro de bagagem. A identificação física é exibida apenas quando existir; o ID interno do aplicativo permanece disponível para rastreabilidade técnica.',
+    9,
   )
   volumes.addRow([])
   volumes.addRow([
     'Nº',
-    'Lacre / Código',
+    'Identificação física',
+    'ID interno no aplicativo',
     'Passageiro',
     'CPF / Documento',
     'Telefone',
@@ -240,7 +262,7 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
     'Período',
     'Situação atual',
   ])
-  applyHeader(volumes, 4, 8)
+  applyHeader(volumes, 4, 9)
 
   const sortedVolumes = [...snapshot.luggageRows].sort((a, b) => {
     const city = a.passenger.city.localeCompare(b.passenger.city, 'pt-BR')
@@ -251,6 +273,7 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
   sortedVolumes.forEach((item, index) => {
     const row = volumes.addRow([
       index + 1,
+      volumePhysicalIdentification(item.luggage.code),
       item.luggage.code,
       item.passenger.fullName,
       documentLabel(item.passenger),
@@ -262,7 +285,7 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
     row.height = 24
     row.alignment = { vertical: 'middle', wrapText: true }
 
-    for (let column = 1; column <= 8; column += 1) {
+    for (let column = 1; column <= 9; column += 1) {
       const cell = row.getCell(column)
       cell.font = { size: 9, color: { argb: TEXT } }
       cell.border = { bottom: { style: 'hair', color: { argb: LINE } } }
@@ -272,12 +295,13 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
     }
 
     row.getCell(2).font = { bold: true, color: { argb: NAVY }, size: 10 }
+    row.getCell(3).font = { color: { argb: MUTED }, size: 8 }
   })
 
-  ;[7, 18, 34, 24, 18, 22, 17, 22].forEach((width, index) => {
+  ;[7, 20, 34, 32, 23, 18, 20, 16, 22].forEach((width, index) => {
     volumes.getColumn(index + 1).width = width
   })
-  volumes.autoFilter = `A4:H${Math.max(volumes.rowCount, 4)}`
+  volumes.autoFilter = `A4:I${Math.max(volumes.rowCount, 4)}`
   volumes.headerFooter.oddFooter =
     '&LCaravana Flávio Gonçalves&CVolumes vinculados&R&P de &N'
 
@@ -285,24 +309,26 @@ export async function createTransportManifestWorkbook(snapshot: ContingencySnaps
   applyTitle(
     note,
     'ORIENTAÇÕES DO MANIFESTO',
-    'Documento operacional de identificação e conferência dos volumes transportados.',
+    'Registro operacional de vinculação e conferência das bagagens transportadas.',
     4,
   )
   note.getColumn(1).width = 4
   note.getColumn(2).width = 105
   note.mergeCells('B4:D4')
   note.getCell('B4').value =
-    'Este arquivo relaciona os volumes cadastrados no aplicativo aos respectivos passageiros. Ele não substitui documentos fiscais, autorizações ou exigências específicas eventualmente aplicáveis ao transporte.'
+    'Este arquivo é um registro operacional de vinculação entre passageiros e bagagens cadastradas. A identificação física é informada somente quando existir. Registros “Sem lacre físico” utilizam identificação interna do aplicativo e não significam que exista etiqueta ou lacre no volume. Fotografias do conjunto, quando cadastradas, permanecem no aplicativo como referência visual. O documento não substitui documentos fiscais, autorizações, exigências legais ou regulatórias aplicáveis ao transporte e não constitui termo de isenção de responsabilidade.'
   note.getCell('B4').alignment = { wrapText: true, vertical: 'top' }
   note.getCell('B4').font = { color: { argb: MUTED }, size: 11 }
   note.getRow(4).height = 55
 
   const guidance = [
-    'Confirme se todos os volumes físicos estão cadastrados antes de gerar a versão entregue ao motorista.',
-    'Após qualquer inclusão, exclusão ou correção de bagagem, gere novamente o manifesto.',
-    'A coluna “Lacres / Códigos” é a ligação direta entre o passageiro e cada volume cadastrado.',
+    'Confirme a carga física antes de gerar a versão entregue ao motorista e gere novamente o documento após qualquer alteração relevante.',
+    'A vinculação principal do manifesto é feita pelo passageiro, documento e quantidade de volumes cadastrados. A identificação física é complementar e aparece somente quando houver.',
+    'Códigos iniciados por “SEM-LACRE-” são identificadores técnicos do aplicativo. Eles não devem ser interpretados como lacres, etiquetas ou marcações existentes fisicamente na bagagem.',
+    'A fotografia do conjunto, quando cadastrada, permanece no aplicativo como referência visual e deve ser usada junto com a conferência presencial da carga.',
     'Documentos não informados aparecem destacados para conferência antes da saída.',
-    'A aba “Volumes” apresenta uma linha individual para cada bagagem e facilita a identificação em uma fiscalização.',
+    'A quantidade apresentada corresponde aos registros existentes no momento da geração. No retorno, a organização física do conjunto pode mudar e deve ser registrada pela reconciliação do conjunto no aplicativo.',
+    'A aba “Volumes” mantém uma linha por registro e separa claramente a identificação física, quando existente, do ID interno usado pelo sistema.',
   ]
 
   guidance.forEach((text, index) => {

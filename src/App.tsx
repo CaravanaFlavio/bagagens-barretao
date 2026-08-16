@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import {
   Search,
   Settings,
-  ShieldCheck,
 } from 'lucide-react'
 import { Link, Route, Routes } from 'react-router'
 import { AppHeader } from './components/AppHeader'
@@ -16,6 +15,9 @@ import { LuggageOperationPage } from './pages/LuggageOperationPage'
 import { CityDeliveryPage } from './pages/CityDeliveryPage'
 import { ContingencyPage } from './pages/ContingencyPage'
 import { CityOrganizationSignsPage } from './pages/CityOrganizationSignsPage'
+import { LuggagePhotoReportPage } from './pages/LuggagePhotoReportPage'
+import { UnidentifiedLuggagePage } from './pages/UnidentifiedLuggagePage'
+import { BackupPage } from './pages/BackupPage'
 import './App.css'
 
 function useConnectionStatus() {
@@ -75,24 +77,9 @@ function App() {
           <Route path="/pendencias" element={<PendenciesPage />} />
           <Route path="/contingencia" element={<ContingencyPage />} />
           <Route path="/placas-cidades" element={<CityOrganizationSignsPage />} />
-          <Route
-            path="/backup"
-            element={
-              <PlaceholderPage
-                title="Backup e segurança"
-                subtitle="Cópias do banco, das fotos e do histórico operacional."
-                icon={<ShieldCheck aria-hidden="true" />}
-                nextPhase="Depois do banco nativo no APK, entraremos com backup para o segundo celular e envio ao Google Drive quando houver conexão."
-                checklist={[
-                  'Banco local no aparelho',
-                  'Exportação criptografada',
-                  'Cópia para o celular reserva',
-                  'Envio ao Google Drive',
-                  'Teste real de restauração',
-                ]}
-              />
-            }
-          />
+          <Route path="/relatorio-fotografico" element={<LuggagePhotoReportPage />} />
+          <Route path="/achados" element={<UnidentifiedLuggagePage />} />
+          <Route path="/backup" element={<BackupPage />} />
           <Route
             path="/configuracoes"
             element={

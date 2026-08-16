@@ -11,10 +11,14 @@ import type {
   PassengerImportBatch,
   PhotoKind,
   PhotoRecord,
+  SetReconciliation,
+  SetReconciliationOperationKey,
   TravelPeriod,
+  UnidentifiedLuggage,
+  UnidentifiedLuggageStatus,
 } from '../domain/types'
 
-interface BagagensDatabase extends DBSchema {
+export interface BagagensDatabase extends DBSchema {
   passengers: {
     key: string
     value: Passenger
@@ -84,13 +88,34 @@ interface BagagensDatabase extends DBSchema {
       'by-fingerprint': string
     }
   }
+
+
+  unidentifiedLuggage: {
+    key: string
+    value: UnidentifiedLuggage
+    indexes: {
+      'by-status': UnidentifiedLuggageStatus
+      'by-date': string
+    }
+  }
+  setReconciliations: {
+    key: string
+    value: SetReconciliation
+    indexes: {
+      'by-passenger': string
+      'by-operation': SetReconciliationOperationKey
+      'by-date': string
+    }
+  }
 }
+
+export const BAGAGENS_DATABASE_VERSION = 8
 
 let databasePromise: Promise<IDBPDatabase<BagagensDatabase>> | null = null
 
 export function getDatabase() {
   if (!databasePromise) {
-    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', 6, {
+    databasePromise = openDB<BagagensDatabase>('bagagens-barretao', BAGAGENS_DATABASE_VERSION, {
       upgrade(database, oldVersion) {
         if (oldVersion < 1) {
           const passengerStore = database.createObjectStore('passengers', {
@@ -152,6 +177,23 @@ export function getDatabase() {
           })
           importBatchStore.createIndex('by-date', 'importedAt')
           importBatchStore.createIndex('by-fingerprint', 'fingerprint', { unique: true })
+        }
+
+        if (oldVersion < 7) {
+          const unidentifiedStore = database.createObjectStore('unidentifiedLuggage', {
+            keyPath: 'id',
+          })
+          unidentifiedStore.createIndex('by-status', 'status')
+          unidentifiedStore.createIndex('by-date', 'foundAt')
+        }
+
+        if (oldVersion < 8) {
+          const reconciliationStore = database.createObjectStore('setReconciliations', {
+            keyPath: 'id',
+          })
+          reconciliationStore.createIndex('by-passenger', 'passengerId')
+          reconciliationStore.createIndex('by-operation', 'operationKey')
+          reconciliationStore.createIndex('by-date', 'checkedAt')
         }
       },
     })

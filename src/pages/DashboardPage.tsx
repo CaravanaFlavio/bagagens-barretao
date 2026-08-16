@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Barcode,
   Boxes,
+  Camera,
   ChevronRight,
   CircleUserRound,
   Cloud,
@@ -33,6 +34,7 @@ import {
 } from '../data/repository'
 import type { DashboardSummary, Luggage, Passenger } from '../domain/types'
 import { parseOperationalQr } from '../utils/operationalQr'
+import { getBackupOverview } from '../data/backupService'
 
 interface DashboardPageProps {
   isOnline: boolean
@@ -56,6 +58,7 @@ const initialSummary: DashboardSummary = {
   luggageCount: 0,
   pendingCount: 0,
   passengerReviewCount: 0,
+  unidentifiedLuggageCount: 0,
 }
 
 const DOCUMENT_TYPE_LABELS = {
@@ -70,6 +73,15 @@ const BUS_TYPE_LABELS = {
   UNSPECIFIED: 'Ônibus não informado',
 } as const
 
+
+function formatBackupTime(value?: string) {
+  if (!value) return 'Ainda não'
+  return new Date(value).toLocaleString('pt-BR', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  })
+}
+
 export function DashboardPage({ isOnline }: DashboardPageProps) {
   const [summary, setSummary] = useState(initialSummary)
   const [scannerOpen, setScannerOpen] = useState(false)
@@ -77,9 +89,16 @@ export function DashboardPage({ isOnline }: DashboardPageProps) {
   const [scannerBusy, setScannerBusy] = useState(false)
   const [scannerError, setScannerError] = useState('')
   const [scannerResult, setScannerResult] = useState<ScannerResult | null>(null)
+  const [lastBackupAt, setLastBackupAt] = useState<string | undefined>()
 
   useEffect(() => {
-    void getDashboardSummary().then(setSummary)
+    void Promise.all([
+      getDashboardSummary(),
+      getBackupOverview(),
+    ]).then(([dashboardSummary, backupOverview]) => {
+      setSummary(dashboardSummary)
+      setLastBackupAt(backupOverview.lastBackupAt)
+    })
   }, [])
 
   const resolveCode = useCallback(async (rawValue: string) => {
@@ -244,7 +263,7 @@ export function DashboardPage({ isOnline }: DashboardPageProps) {
           <SummaryCard icon={<CircleUserRound />} label="Passageiros" value={String(summary.passengerCount)} />
           <SummaryCard icon={<Boxes />} label="Volumes" value={String(summary.luggageCount)} />
           <SummaryCard icon={<FileClock />} label="Pendências" value={String(summary.pendingCount)} />
-          <SummaryCard icon={<Database />} label="Último backup" value="Ainda não" compact />
+          <SummaryCard icon={<Database />} label="Último backup" value={formatBackupTime(lastBackupAt)} compact />
         </div>
       </section>
 
@@ -283,6 +302,15 @@ export function DashboardPage({ isOnline }: DashboardPageProps) {
           />
           <QuickCard title="Pendências" description="Pendências do fluxo de bagagens" path="/pendencias" icon={<AlertTriangle />} badge={summary.pendingCount} />
           <QuickCard title="Contingência" description="Planilha para controle manual" path="/contingencia" icon={<FileSpreadsheet />} />
+          <QuickCard
+            title="Achados / Sem identificação"
+            description="Fotografar agora e vincular ao dono depois"
+            path="/achados"
+            icon={<PackageOpen />}
+            badge={summary.unidentifiedLuggageCount > 0 ? summary.unidentifiedLuggageCount : undefined}
+            warning={summary.unidentifiedLuggageCount > 0}
+          />
+          <QuickCard title="Relatório fotográfico" description="Fotos dos conjuntos por passageiro" path="/relatorio-fotografico" icon={<Camera />} />
           <QuickCard title="Placas por cidade" description="A4 por cidade e semana" path="/placas-cidades" icon={<MapPinned />} />
           <QuickCard title="Backup" description="Cópias e restauração" path="/backup" icon={<Cloud />} />
           <QuickCard title="Configurações" description="Cidades e setores" path="/configuracoes" icon={<Settings />} />

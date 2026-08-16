@@ -47,6 +47,15 @@ const MOVEMENT_LABELS: Record<LuggageMovement['type'], string> = {
   WAREHOUSE_TO_CITY: 'Galpão → cidade',
 }
 
+const SET_RECONCILIATION_LABELS = {
+  NO_RELEVANT_CHANGE: 'Sem alteração relevante',
+  REORGANIZED: 'Reorganizado / volumes agrupados',
+  SPLIT_INCREASED: 'Volumes separados / aumentou a quantidade',
+  POSSIBLE_MISSING: 'Possível volume faltante',
+  ADDITIONAL_VOLUME: 'Volume adicional',
+  OTHER: 'Outro',
+} as const
+
 const STAGE_OPTIONS = Object.entries(STAGE_LABELS) as [LuggageStage, string][]
 
 function formatDateTime(value: string) {
@@ -157,6 +166,10 @@ export function PendenciesPage() {
           item.movement?.exceptionReason,
           item.closure?.note,
           item.closure ? operationTitle(item.closure.operationKey) : '',
+          item.setReconciliation?.note,
+          item.setReconciliation
+            ? SET_RECONCILIATION_LABELS[item.setReconciliation.result]
+            : '',
         ]
           .filter(Boolean)
           .join(' '),
@@ -275,6 +288,12 @@ export function PendenciesPage() {
           value={report.divergentClosureCount}
           icon={<FileClock />}
           tone="amber"
+        />
+        <ReportSummaryCard
+          label="Conjuntos a revisar"
+          value={report.setReconciliationPendencyCount}
+          icon={<AlertTriangle />}
+          tone="red"
         />
         <ReportSummaryCard
           label="Volumes cadastrados"
@@ -594,6 +613,7 @@ export function PendenciesPage() {
             <div><span>Passageiros sem bagagem</span><strong>{report.passengerWithoutLuggageCount}</strong></div>
             <div><span>Exceções registradas</span><strong>{report.exceptionCount}</strong></div>
             <div><span>Fechamentos divergentes</span><strong>{report.divergentClosureCount}</strong></div>
+            <div><span>Conjuntos a revisar</span><strong>{report.setReconciliationPendencyCount}</strong></div>
             <div><span>Volumes cadastrados</span><strong>{report.luggageCount}</strong></div>
           </div>
         </section>
@@ -904,6 +924,37 @@ function PendencyCard({ item }: { item: CentralPendency }) {
     )
   }
 
+
+  if (
+    item.kind === 'SET_RECONCILIATION_MISSING' &&
+    item.setReconciliation
+  ) {
+    const reconciliation = item.setReconciliation
+    return (
+      <article className="pendency-card tone-red">
+        <div className="pendency-card__icon"><AlertTriangle aria-hidden="true" /></div>
+        <div className="pendency-card__content">
+          <span className="pendency-card__kind">Possível falta no conjunto de retorno</span>
+          <h3>{item.passenger?.fullName ?? 'Passageiro não localizado'}</h3>
+          <p>
+            Saída: {reconciliation.originalQuantity} · Observados no retorno: {reconciliation.observedQuantity}
+          </p>
+          <blockquote>
+            {reconciliation.note || SET_RECONCILIATION_LABELS[reconciliation.result]}
+          </blockquote>
+          {item.passenger ? (
+            <div className="badge-row">
+              <span className="info-badge"><MapPin />{item.passenger.city}</span>
+              <span className={`period-badge period-${item.passenger.travelPeriod.toLowerCase()}`}>
+                {TRAVEL_PERIOD_LABELS[item.passenger.travelPeriod]}
+              </span>
+            </div>
+          ) : null}
+          <time>{formatDateTime(reconciliation.checkedAt)}</time>
+        </div>
+      </article>
+    )
+  }
 
   if (item.kind === 'CITY_TRANSFER_DIVERGENCE' && item.cityTransfer) {
     const transfer = item.cityTransfer

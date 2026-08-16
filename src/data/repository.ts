@@ -42,6 +42,13 @@ import type {
   OperationSnapshot,
   PendenciesReport,
   PeriodReportSummary,
+  ResolveUnidentifiedLuggageInput,
+  SetReconciliation,
+  SetReconciliationInput,
+  SetReconciliationOperationKey,
+  UnidentifiedLuggage,
+  UnidentifiedLuggageInput,
+  UnidentifiedLuggageLocation,
 } from '../domain/types'
 
 function now() {
@@ -173,7 +180,14 @@ export async function savePassenger(
 export async function deletePassengerPermanently(passengerId: string) {
   const database = await getDatabase()
   const transaction = database.transaction(
-    ['passengers', 'luggage', 'movements', 'photos', 'cityTransfers'],
+    [
+      'passengers',
+      'luggage',
+      'movements',
+      'photos',
+      'cityTransfers',
+      'setReconciliations',
+    ],
     'readwrite',
   )
 
@@ -181,8 +195,12 @@ export async function deletePassengerPermanently(passengerId: string) {
   const movementStore = transaction.objectStore('movements')
   const photoStore = transaction.objectStore('photos')
   const transferStore = transaction.objectStore('cityTransfers')
+  const reconciliationStore = transaction.objectStore('setReconciliations')
   const passengerLuggage = await luggageStore.index('by-passenger').getAll(passengerId)
   const passengerPhotoKeys = await photoStore.index('by-passenger').getAllKeys(passengerId)
+  const reconciliationKeys = await reconciliationStore
+    .index('by-passenger')
+    .getAllKeys(passengerId)
   const luggageIds = new Set(passengerLuggage.map((item) => item.id))
 
   for (const luggage of passengerLuggage) {
@@ -205,6 +223,11 @@ export async function deletePassengerPermanently(passengerId: string) {
   }
 
   await Promise.all(passengerPhotoKeys.map((photoId) => photoStore.delete(photoId)))
+  await Promise.all(
+    reconciliationKeys.map((reconciliationId) =>
+      reconciliationStore.delete(reconciliationId),
+    ),
+  )
   await transaction.objectStore('passengers').delete(passengerId)
   await transaction.done
 }
@@ -323,6 +346,226 @@ export async function createLuggage(input: LuggageInput): Promise<Luggage> {
   return luggage
 }
 
+
+function unidentifiedLocationLabel(location: UnidentifiedLuggageLocation) {
+  const labels: Record<UnidentifiedLuggageLocation, string> = {
+    WAREHOUSE_INITIAL: 'Galpão de saída',
+    TRAILER_OUTBOUND: 'Carreta / viagem de ida',
+    BARRETOS: 'Barretos / camping',
+    TRAILER_RETURN: 'Carreta / viagem de retorno',
+    WAREHOUSE_RETURN: 'Galpão de retorno',
+  }
+  return labels[location]
+}
+
+function movementTypeForStage(stage: Luggage['currentStage']): LuggageMovement['type'] {
+  const movementByStage: Record<Luggage['currentStage'], LuggageMovement['type']> = {
+    WAREHOUSE_INITIAL: 'REGISTERED_AT_WAREHOUSE',
+    TRAILER_OUTBOUND: 'WAREHOUSE_TO_TRAILER',
+    WITH_PASSENGER: 'TRAILER_TO_PASSENGER',
+    TRAILER_RETURN: 'PASSENGER_TO_TRAILER',
+    WAREHOUSE_RETURN: 'TRAILER_TO_WAREHOUSE',
+    DELIVERED_TO_CITY: 'WAREHOUSE_TO_CITY',
+  }
+  return movementByStage[stage]
+}
+
+export async function listUnidentifiedLuggage(
+  includeResolved = false,
+): Promise<UnidentifiedLuggage[]> {
+  const database = await getDatabase()
+  const records = includeResolved
+    ? await database.getAll('unidentifiedLuggage')
+    : await database.getAllFromIndex('unidentifiedLuggage', 'by-status', 'OPEN')
+
+  return records.sort((a, b) => b.foundAt.localeCompare(a.foundAt))
+}
+
+export async function getOpenUnidentifiedLuggageCount(): Promise<number> {
+  const database = await getDatabase()
+  const records = await database.getAllFromIndex('unidentifiedLuggage', 'by-status', 'OPEN')
+  return records.reduce((total, record) => total + record.quantity, 0)
+}
+
+export async function createUnidentifiedLuggage(
+  input: UnidentifiedLuggageInput,
+): Promise<UnidentifiedLuggage> {
+  const quantity = Math.trunc(input.quantity)
+  if (!Number.isFinite(quantity) || quantity < 1 || quantity > 99) {
+    throw new Error('Informe uma quantidade entre 1 e 99 volumes.')
+  }
+
+  if (!input.photo?.blob) {
+    throw new Error('Tire ou selecione uma foto do volume sem identificação.')
+  }
+
+  const database = await getDatabase()
+  const timestamp = now()
+  const recordId = newId('unidentified')
+  const photoId = newId('photo')
+
+  const record: UnidentifiedLuggage = {
+    id: recordId,
+    status: 'OPEN',
+    quantity,
+    foundLocation: input.foundLocation,
+    description: input.description.trim(),
+    notes: input.notes.trim(),
+    photoId,
+    foundAt: timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    linkedLuggageIds: [],
+  }
+
+  const photo: PhotoRecord = {
+    id: photoId,
+    kind: 'LUGGAGE_DETAIL',
+    passengerId: '',
+    luggageId: '',
+    ...input.photo,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
+
+  const transaction = database.transaction(
+    ['unidentifiedLuggage', 'photos'],
+    'readwrite',
+  )
+  await transaction.objectStore('unidentifiedLuggage').add(record)
+  await transaction.objectStore('photos').add(photo)
+  await transaction.done
+
+  return record
+}
+
+export async function deleteUnidentifiedLuggage(recordId: string) {
+  const database = await getDatabase()
+  const transaction = database.transaction(
+    ['unidentifiedLuggage', 'photos'],
+    'readwrite',
+  )
+  const recordStore = transaction.objectStore('unidentifiedLuggage')
+  const photoStore = transaction.objectStore('photos')
+  const record = await recordStore.get(recordId)
+
+  if (!record) {
+    await transaction.done
+    return
+  }
+  if (record.status === 'RESOLVED') {
+    throw new Error('Um achado já vinculado não pode ser excluído por esta tela.')
+  }
+
+  if (record.photoId) {
+    await photoStore.delete(record.photoId)
+  }
+  await recordStore.delete(record.id)
+  await transaction.done
+}
+
+export async function resolveUnidentifiedLuggage(
+  recordId: string,
+  input: ResolveUnidentifiedLuggageInput,
+): Promise<Luggage[]> {
+  const database = await getDatabase()
+  const transaction = database.transaction(
+    ['unidentifiedLuggage', 'passengers', 'luggage', 'movements', 'photos'],
+    'readwrite',
+  )
+
+  const recordStore = transaction.objectStore('unidentifiedLuggage')
+  const passengerStore = transaction.objectStore('passengers')
+  const luggageStore = transaction.objectStore('luggage')
+  const movementStore = transaction.objectStore('movements')
+  const photoStore = transaction.objectStore('photos')
+
+  const record = await recordStore.get(recordId)
+  if (!record) {
+    throw new Error('O volume sem identificação não foi encontrado.')
+  }
+  if (record.status !== 'OPEN') {
+    throw new Error('Este achado já foi vinculado a um passageiro.')
+  }
+
+  const passenger = await passengerStore.get(input.passengerId)
+  if (!passenger) {
+    throw new Error('O passageiro selecionado não foi encontrado.')
+  }
+
+  const timestamp = now()
+  const linked: Luggage[] = []
+  const movementType = movementTypeForStage(input.currentStage)
+  const sourceLabel = unidentifiedLocationLabel(record.foundLocation)
+  const description = record.description || 'Sem descrição'
+  const linkedNote = [
+    `Encontrado sem identificação em ${sourceLabel} em ${new Date(record.foundAt).toLocaleString('pt-BR')}.`,
+    `Descrição original: ${description}.`,
+    record.notes ? `Observação original: ${record.notes}.` : '',
+  ].filter(Boolean).join(' ')
+
+  for (let index = 0; index < record.quantity; index += 1) {
+    const code = `SEM-LACRE-ACHADO-${crypto.randomUUID().toLocaleUpperCase('pt-BR')}`
+    const luggage: Luggage = {
+      id: newId('luggage'),
+      passengerId: passenger.id,
+      code,
+      normalizedCode: normalizeCode(code),
+      codeSource: 'MANUAL',
+      labelColor: '',
+      luggageType: 'Outro',
+      notes: linkedNote,
+      currentStage: input.currentStage,
+      unidentifiedSourceId: record.id,
+      foundUnidentifiedAt: record.foundAt,
+      foundUnidentifiedLocation: record.foundLocation,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+
+    const movement: LuggageMovement = {
+      id: newId('movement'),
+      luggageId: luggage.id,
+      type: movementType,
+      fromStage: null,
+      toStage: input.currentStage,
+      occurredAt: timestamp,
+      note: `Achado sem identificação vinculado posteriormente a ${passenger.fullName}. ${linkedNote}`,
+      photoIds: record.photoId ? [record.photoId] : [],
+      isException: false,
+    }
+
+    await luggageStore.add(luggage)
+    await movementStore.add(movement)
+    linked.push(luggage)
+  }
+
+  if (record.photoId) {
+    const photo = await photoStore.get(record.photoId)
+    if (photo) {
+      await photoStore.put({
+        ...photo,
+        passengerId: passenger.id,
+        luggageId: '',
+        updatedAt: timestamp,
+      })
+    }
+  }
+
+  await recordStore.put({
+    ...record,
+    status: 'RESOLVED',
+    resolvedAt: timestamp,
+    resolvedPassengerId: passenger.id,
+    linkedLuggageIds: linked.map((item) => item.id),
+    updatedAt: timestamp,
+  })
+  await transaction.done
+
+  return linked
+}
+
+
 export async function deleteLuggagePermanently(luggageId: string) {
   const database = await getDatabase()
   const transaction = database.transaction(
@@ -358,6 +601,23 @@ export async function listLuggageMovements(luggageId: string): Promise<LuggageMo
   const database = await getDatabase()
   const movements = await database.getAllFromIndex('movements', 'by-luggage', luggageId)
   return movements.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+}
+
+export async function getPassengerOutboundVolumeCount(passengerId: string): Promise<number> {
+  const database = await getDatabase()
+  const luggage = await database.getAllFromIndex('luggage', 'by-passenger', passengerId)
+  if (luggage.length === 0) return 0
+
+  const movementLists = await Promise.all(
+    luggage.map((item) =>
+      database.getAllFromIndex('movements', 'by-luggage', item.id),
+    ),
+  )
+  const outboundCount = movementLists.filter((movements) =>
+    movements.some((movement) => movement.type === 'WAREHOUSE_TO_TRAILER'),
+  ).length
+
+  return outboundCount > 0 ? outboundCount : luggage.length
 }
 
 export async function getPassengerSetPhoto(passengerId: string): Promise<PhotoRecord | undefined> {
@@ -481,9 +741,10 @@ export async function deletePhoto(photoId: string) {
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
-  const [report, passengers] = await Promise.all([
+  const [report, passengers, unidentifiedLuggageCount] = await Promise.all([
     getPendenciesReport(),
     listPassengers(),
+    getOpenUnidentifiedLuggageCount(),
   ])
   return {
     passengerCount: report.passengerCount,
@@ -492,6 +753,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     passengerReviewCount: passengers.filter(
       (passenger) => passenger.reviewStatus === 'REVIEW',
     ).length,
+    unidentifiedLuggageCount,
   }
 }
 
@@ -1062,12 +1324,20 @@ function closureHasDivergence(closure: OperationClosure) {
 
 export async function getPendenciesReport(): Promise<PendenciesReport> {
   const database = await getDatabase()
-  const [passengers, allLuggage, movements, closures, cityTransfers] = await Promise.all([
+  const [
+    passengers,
+    allLuggage,
+    movements,
+    closures,
+    cityTransfers,
+    setReconciliations,
+  ] = await Promise.all([
     database.getAll('passengers'),
     database.getAll('luggage'),
     database.getAll('movements'),
     database.getAll('operationClosures'),
     database.getAll('cityTransfers'),
+    database.getAll('setReconciliations'),
   ])
 
   const passengerMap = new Map(passengers.map((passenger) => [passenger.id, passenger]))
@@ -1143,6 +1413,9 @@ export async function getPendenciesReport(): Promise<PendenciesReport> {
     closureHasDivergence,
   )
   const divergentCityTransfers = cityTransfers.filter(transferHasMissingItems)
+  const setReconciliationPendencies = setReconciliations.filter(
+    (reconciliation) => reconciliation.result === 'POSSIBLE_MISSING',
+  )
 
   const pendencies: CentralPendency[] = [
     ...passengersWithoutLuggage.map((passenger) => ({
@@ -1172,6 +1445,13 @@ export async function getPendenciesReport(): Promise<PendenciesReport> {
       kind: 'CITY_TRANSFER_DIVERGENCE' as const,
       occurredAt: cityTransfer.finalizedAt ?? cityTransfer.updatedAt,
       cityTransfer,
+    })),
+    ...setReconciliationPendencies.map((setReconciliation) => ({
+      id: `set_reconciliation_missing_${setReconciliation.id}`,
+      kind: 'SET_RECONCILIATION_MISSING' as const,
+      occurredAt: setReconciliation.checkedAt,
+      setReconciliation,
+      passenger: passengerMap.get(setReconciliation.passengerId),
     })),
   ].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
 
@@ -1230,17 +1510,22 @@ export async function getPendenciesReport(): Promise<PendenciesReport> {
     exceptionCount: exceptionMovements.length,
     divergentClosureCount:
       divergentLatestClosures.length + divergentCityTransfers.length,
+    setReconciliationPendencyCount: setReconciliationPendencies.length,
     activePendencyCount:
       passengersWithoutLuggage.length +
       exceptionMovements.length +
       divergentLatestClosures.length +
-      divergentCityTransfers.length,
+      divergentCityTransfers.length +
+      setReconciliationPendencies.length,
     stageCounts,
     pendencies,
     luggage,
     movementTimeline,
     closures: [...closures].sort((a, b) =>
       b.finalizedAt.localeCompare(a.finalizedAt),
+    ),
+    setReconciliations: [...setReconciliations].sort((a, b) =>
+      b.checkedAt.localeCompare(a.checkedAt),
     ),
     citySummaries: Array.from(cityMap.values()).sort((a, b) =>
       a.city.localeCompare(b.city, 'pt-BR'),
@@ -1639,6 +1924,105 @@ export async function saveOperationEvidencePhoto(
   }
   await database.add('photos', photo)
   return photo
+}
+
+function setReconciliationId(
+  operationKey: SetReconciliationOperationKey,
+  passengerId: string,
+) {
+  return `set_reconciliation_${operationKey}_${passengerId}`
+}
+
+export async function getSetReconciliation(
+  operationKey: SetReconciliationOperationKey,
+  passengerId: string,
+): Promise<SetReconciliation | undefined> {
+  const database = await getDatabase()
+  return database.get(
+    'setReconciliations',
+    setReconciliationId(operationKey, passengerId),
+  )
+}
+
+export async function listSetReconciliationsByPassenger(
+  passengerId: string,
+): Promise<SetReconciliation[]> {
+  const database = await getDatabase()
+  const records = await database.getAllFromIndex(
+    'setReconciliations',
+    'by-passenger',
+    passengerId,
+  )
+  return records.sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))
+}
+
+export async function listSetReconciliations(): Promise<SetReconciliation[]> {
+  const database = await getDatabase()
+  const records = await database.getAll('setReconciliations')
+  return records.sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))
+}
+
+export async function saveSetReconciliation(
+  input: SetReconciliationInput,
+): Promise<SetReconciliation> {
+  const originalQuantity = Math.max(0, Math.trunc(input.originalQuantity))
+  const observedQuantity = Math.max(0, Math.trunc(input.observedQuantity))
+
+  if (!Number.isFinite(input.originalQuantity) || originalQuantity > 99) {
+    throw new Error('A quantidade original informada é inválida.')
+  }
+  if (!Number.isFinite(input.observedQuantity) || observedQuantity > 99) {
+    throw new Error('Informe uma quantidade observada entre 0 e 99 volumes.')
+  }
+  if (input.result === 'NO_RELEVANT_CHANGE' && observedQuantity !== originalQuantity) {
+    throw new Error(
+      'Para marcar “Sem alteração relevante”, a quantidade observada deve ser igual à quantidade de saída. Se o conjunto foi reorganizado, escolha a situação correspondente.',
+    )
+  }
+  if (
+    (input.result === 'POSSIBLE_MISSING' || input.result === 'OTHER') &&
+    !input.note.trim()
+  ) {
+    throw new Error('Registre uma observação para esta situação.')
+  }
+
+  const database = await getDatabase()
+  const [passenger, photo] = await Promise.all([
+    database.get('passengers', input.passengerId),
+    database.get('photos', input.photoId),
+  ])
+
+  if (!passenger) {
+    throw new Error('O passageiro desta conferência não foi encontrado.')
+  }
+  if (
+    !photo ||
+    photo.kind !== 'OPERATION_EVIDENCE' ||
+    photo.passengerId !== input.passengerId ||
+    photo.operationKey !== input.operationKey
+  ) {
+    throw new Error('A foto do retorno não pertence a este passageiro e a esta etapa.')
+  }
+
+  const id = setReconciliationId(input.operationKey, input.passengerId)
+  const existing = await database.get('setReconciliations', id)
+  const timestamp = now()
+  const record: SetReconciliation = {
+    id,
+    passengerId: input.passengerId,
+    operationKey: input.operationKey,
+    originalQuantity: existing?.originalQuantity ?? originalQuantity,
+    observedQuantity,
+    result: input.result,
+    note: input.note.trim(),
+    photoId: input.photoId,
+    checkedAt: timestamp,
+    createdAt: existing?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  }
+
+  await database.put('setReconciliations', record)
+  return record
 }
 
 export async function finalizeOperation(

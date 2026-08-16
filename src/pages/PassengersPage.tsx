@@ -127,6 +127,7 @@ const UPDATE_STATUS_LABELS: Record<PassengerUpdateStatus, string> = {
 }
 
 type LabelMode = 'PASSENGER' | 'LUGGAGE'
+type LuggageEntryMode = 'QUICK_SET' | 'INDIVIDUAL'
 
 type LuggageLabelRecord = Awaited<ReturnType<typeof listLuggageWithPassengers>>[number]
 
@@ -150,6 +151,26 @@ const emptyLuggageForm: Omit<LuggageInput, 'passengerId'> = {
   labelColor: '',
   luggageType: 'Mala',
   notes: '',
+}
+
+const AUTOMATIC_LUGGAGE_PREFIX = 'SEM-LACRE-'
+
+function isAutomaticLuggageCode(code: string) {
+  return code.startsWith(AUTOMATIC_LUGGAGE_PREFIX)
+}
+
+function luggageDisplayCode(code: string) {
+  return isAutomaticLuggageCode(code) ? 'Sem lacre físico' : code
+}
+
+function createAutomaticLuggageCode(passengerId: string, position: number) {
+  const passengerToken = passengerId
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(-6)
+    .toLocaleUpperCase('pt-BR') || 'PASS'
+  const timeToken = Date.now().toString(36).toLocaleUpperCase('pt-BR')
+  const randomToken = Math.random().toString(36).slice(2, 7).toLocaleUpperCase('pt-BR')
+  return `${AUTOMATIC_LUGGAGE_PREFIX}${passengerToken}-${timeToken}-${position}-${randomToken}`
 }
 
 const MOVEMENT_LABELS: Record<LuggageMovement['type'], string> = {
@@ -277,6 +298,8 @@ export function PassengersPage() {
 
   const [luggagePassenger, setLuggagePassenger] = useState<PassengerSummary | null>(null)
   const [luggage, setLuggage] = useState<Luggage[]>([])
+  const [luggageEntryMode, setLuggageEntryMode] = useState<LuggageEntryMode>('QUICK_SET')
+  const [quickVolumeCount, setQuickVolumeCount] = useState(1)
   const [luggageForm, setLuggageForm] = useState(emptyLuggageForm)
   const [luggageFormError, setLuggageFormError] = useState('')
   const [savingLuggage, setSavingLuggage] = useState(false)
@@ -952,6 +975,8 @@ export function PassengersPage() {
 
   const openLuggage = async (passenger: PassengerSummary) => {
     setLuggagePassenger(passenger)
+    setLuggageEntryMode('QUICK_SET')
+    setQuickVolumeCount(1)
     setLuggageForm(emptyLuggageForm)
     setLuggageFormError('')
     setPhotoError('')
@@ -966,6 +991,58 @@ export function PassengersPage() {
   const handleLuggageSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!luggagePassenger) return
+
+    if (luggageEntryMode === 'QUICK_SET') {
+      if (!Number.isInteger(quickVolumeCount) || quickVolumeCount < 1 || quickVolumeCount > 99) {
+        setLuggageFormError('Informe uma quantidade entre 1 e 99 volumes.')
+        return
+      }
+
+      if (!setPhoto) {
+        const continueWithoutPhoto = window.confirm(
+          'A foto do conjunto ainda não foi tirada. Ela será a principal referência visual em Barretos. Deseja cadastrar os volumes mesmo assim?',
+        )
+        if (!continueWithoutPhoto) return
+      }
+
+      let createdCount = 0
+      try {
+        setSavingLuggage(true)
+        setLuggageFormError('')
+
+        for (let position = 1; position <= quickVolumeCount; position += 1) {
+          const noteParts = [
+            `Cadastro rápido por conjunto • volume ${position} de ${quickVolumeCount}`,
+            luggageForm.notes.trim(),
+          ].filter(Boolean)
+
+          await createLuggage({
+            passengerId: luggagePassenger.id,
+            code: createAutomaticLuggageCode(luggagePassenger.id, position),
+            codeSource: 'MANUAL',
+            labelColor: 'Sem lacre',
+            luggageType: 'Outro',
+            notes: noteParts.join(' • '),
+          })
+          createdCount += 1
+        }
+
+        setQuickVolumeCount(1)
+        setLuggageForm(emptyLuggageForm)
+        await Promise.all([refreshLuggage(), loadPassengers()])
+      } catch (error) {
+        await Promise.all([refreshLuggage(), loadPassengers()])
+        const baseMessage = error instanceof Error ? error.message : 'Não foi possível cadastrar o conjunto.'
+        setLuggageFormError(
+          createdCount > 0
+            ? `${createdCount} de ${quickVolumeCount} volumes foram salvos antes da interrupção. Confira a lista ao lado antes de tentar novamente. ${baseMessage}`
+            : baseMessage,
+        )
+      } finally {
+        setSavingLuggage(false)
+      }
+      return
+    }
 
     if (!luggageForm.code.trim()) {
       setLuggageFormError('Digite ou escaneie o código do lacre.')
@@ -991,7 +1068,7 @@ export function PassengersPage() {
 
   const handleDeleteLuggage = async (item: Luggage) => {
     const confirmed = window.confirm(
-      `Excluir definitivamente a bagagem ${item.code}, suas fotos e todo o histórico dela?`,
+      `Excluir definitivamente a bagagem ${luggageDisplayCode(item.code)}, suas fotos e todo o histórico dela?`,
     )
     if (!confirmed) return
 
@@ -1057,7 +1134,7 @@ export function PassengersPage() {
   const removeLuggagePhoto = async (item: Luggage) => {
     const photo = luggagePhotos[item.id]
     if (!photo) return
-    const confirmed = window.confirm(`Remover a foto individual da bagagem ${item.code}?`)
+    const confirmed = window.confirm(`Remover a foto individual da bagagem ${luggageDisplayCode(item.code)}?`)
     if (!confirmed) return
 
     await deletePhoto(photo.id)
@@ -1080,6 +1157,10 @@ export function PassengersPage() {
 
   const closeLuggageModal = () => {
     setLuggagePassenger(null)
+    setLuggageEntryMode('QUICK_SET')
+    setQuickVolumeCount(1)
+    setLuggageForm(emptyLuggageForm)
+    setLuggageFormError('')
     setSetPhoto(null)
     setLuggagePhotos({})
     setPhotoError('')
@@ -2076,90 +2157,185 @@ export function PassengersPage() {
               <div className="form-section-title">
                 <PackagePlus aria-hidden="true" />
                 <div>
-                  <strong>Incluir uma bagagem</strong>
-                  <span>O primeiro registro já será salvo como recebida no galpão.</span>
+                  <strong>{luggageEntryMode === 'QUICK_SET' ? 'Cadastrar conjunto de bagagens' : 'Incluir uma bagagem'}</strong>
+                  <span>
+                    {luggageEntryMode === 'QUICK_SET'
+                      ? 'Informe somente a quantidade. O app cria os volumes internos sem exigir números de lacre.'
+                      : 'Use este modo quando existir um código, QR ou lacre físico real.'}
+                  </span>
                 </div>
               </div>
 
-              <div className="code-mode-switch" role="group" aria-label="Forma de inserir o código">
+              <div className="code-mode-switch" role="group" aria-label="Modo de cadastro de bagagem">
                 <button
                   type="button"
-                  className={luggageForm.codeSource === 'MANUAL' ? 'is-active' : undefined}
-                  onClick={() => updateCodeSource('MANUAL')}
+                  className={luggageEntryMode === 'QUICK_SET' ? 'is-active' : undefined}
+                  onClick={() => {
+                    setLuggageEntryMode('QUICK_SET')
+                    setLuggageFormError('')
+                  }}
+                >
+                  <PackagePlus aria-hidden="true" />
+                  Rápido por conjunto
+                </button>
+                <button
+                  type="button"
+                  className={luggageEntryMode === 'INDIVIDUAL' ? 'is-active' : undefined}
+                  onClick={() => {
+                    setLuggageEntryMode('INDIVIDUAL')
+                    setLuggageFormError('')
+                  }}
                 >
                   <Barcode aria-hidden="true" />
-                  Digitar código
-                </button>
-                <button
-                  type="button"
-                  className={luggageForm.codeSource === 'SCANNER' ? 'is-active' : undefined}
-                  onClick={() => updateCodeSource('SCANNER')}
-                >
-                  <Camera aria-hidden="true" />
-                  Escanear
+                  Código / lacre
                 </button>
               </div>
 
-              <label className="field">
-                <span>Código do lacre *</span>
-                <div className="code-input-row">
-                  <input
-                    value={luggageForm.code}
-                    onChange={(event) => setLuggageForm((current) => ({ ...current, code: event.target.value, codeSource: 'MANUAL' }))}
-                    placeholder="Ex.: 0005301"
-                    autoComplete="off"
-                  />
-                  <button type="button" className="scan-button" onClick={() => setScannerOpen(true)} aria-label="Abrir câmera para escanear">
-                    <Camera aria-hidden="true" />
-                  </button>
-                </div>
-              </label>
+              {luggageEntryMode === 'QUICK_SET' ? (
+                <>
+                  <div className={setPhoto ? 'photo-status photo-status--ok' : 'photo-status photo-status--pending'}>
+                    {setPhoto
+                      ? 'Foto do conjunto pronta. Ela será a referência visual desses volumes.'
+                      : 'Recomendado: tire a foto do conjunto acima antes de salvar os volumes.'}
+                  </div>
 
-              <div className="form-grid">
-                <label className="field">
-                  <span>Cor da etiqueta ou lacre *</span>
-                  <input
-                    list="label-colors"
-                    value={luggageForm.labelColor}
-                    onChange={(event) => setLuggageForm((current) => ({ ...current, labelColor: event.target.value }))}
-                    placeholder="Ex.: Verde"
-                  />
-                  <datalist id="label-colors">
-                    {LABEL_COLORS.map((color) => <option key={color} value={color} />)}
-                  </datalist>
-                </label>
+                  <label className="field">
+                    <span>Quantidade de volumes *</span>
+                    <div className="code-input-row">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setQuickVolumeCount((current) => Math.max(1, current - 1))}
+                        disabled={savingLuggage || quickVolumeCount <= 1}
+                        aria-label="Diminuir quantidade de volumes"
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        min={1}
+                        max={99}
+                        inputMode="numeric"
+                        value={quickVolumeCount}
+                        onChange={(event) => {
+                          const value = Number(event.target.value)
+                          setQuickVolumeCount(Number.isFinite(value) ? Math.max(1, Math.min(99, Math.trunc(value))) : 1)
+                        }}
+                        aria-label="Quantidade de volumes"
+                      />
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setQuickVolumeCount((current) => Math.min(99, current + 1))}
+                        disabled={savingLuggage || quickVolumeCount >= 99}
+                        aria-label="Aumentar quantidade de volumes"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </label>
 
-                <label className="field">
-                  <span>Tipo</span>
-                  <select
-                    value={luggageForm.luggageType}
-                    onChange={(event) => setLuggageForm((current) => ({ ...current, luggageType: event.target.value }))}
-                  >
-                    <option>Mala</option>
-                    <option>Bolsa</option>
-                    <option>Mochila</option>
-                    <option>Caixa</option>
-                    <option>Sacola</option>
-                    <option>Outro</option>
-                  </select>
-                </label>
-              </div>
+                  <label className="field">
+                    <span>Observação do conjunto</span>
+                    <textarea
+                      rows={2}
+                      value={luggageForm.notes}
+                      onChange={(event) => setLuggageForm((current) => ({ ...current, notes: event.target.value }))}
+                      placeholder="Ex.: 2 sacos pretos, 1 caixa e 1 mala azul"
+                    />
+                  </label>
 
-              <label className="field">
-                <span>Observação da bagagem</span>
-                <textarea
-                  rows={2}
-                  value={luggageForm.notes}
-                  onChange={(event) => setLuggageForm((current) => ({ ...current, notes: event.target.value }))}
-                  placeholder="Ex.: mala preta grande com fita vermelha"
-                />
-              </label>
+                  <div className="photo-status photo-status--ok">
+                    Você não precisa inventar códigos como 9999. Cada volume receberá um identificador interno automático e continuará contando normalmente nas etapas e relatórios.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="code-mode-switch" role="group" aria-label="Forma de inserir o código">
+                    <button
+                      type="button"
+                      className={luggageForm.codeSource === 'MANUAL' ? 'is-active' : undefined}
+                      onClick={() => updateCodeSource('MANUAL')}
+                    >
+                      <Barcode aria-hidden="true" />
+                      Digitar código
+                    </button>
+                    <button
+                      type="button"
+                      className={luggageForm.codeSource === 'SCANNER' ? 'is-active' : undefined}
+                      onClick={() => updateCodeSource('SCANNER')}
+                    >
+                      <Camera aria-hidden="true" />
+                      Escanear
+                    </button>
+                  </div>
+
+                  <label className="field">
+                    <span>Código do lacre *</span>
+                    <div className="code-input-row">
+                      <input
+                        value={luggageForm.code}
+                        onChange={(event) => setLuggageForm((current) => ({ ...current, code: event.target.value, codeSource: 'MANUAL' }))}
+                        placeholder="Ex.: 0005301"
+                        autoComplete="off"
+                      />
+                      <button type="button" className="scan-button" onClick={() => setScannerOpen(true)} aria-label="Abrir câmera para escanear">
+                        <Camera aria-hidden="true" />
+                      </button>
+                    </div>
+                  </label>
+
+                  <div className="form-grid">
+                    <label className="field">
+                      <span>Cor da etiqueta ou lacre *</span>
+                      <input
+                        list="label-colors"
+                        value={luggageForm.labelColor}
+                        onChange={(event) => setLuggageForm((current) => ({ ...current, labelColor: event.target.value }))}
+                        placeholder="Ex.: Verde"
+                      />
+                      <datalist id="label-colors">
+                        {LABEL_COLORS.map((color) => <option key={color} value={color} />)}
+                      </datalist>
+                    </label>
+
+                    <label className="field">
+                      <span>Tipo</span>
+                      <select
+                        value={luggageForm.luggageType}
+                        onChange={(event) => setLuggageForm((current) => ({ ...current, luggageType: event.target.value }))}
+                      >
+                        <option>Mala</option>
+                        <option>Bolsa</option>
+                        <option>Mochila</option>
+                        <option>Caixa</option>
+                        <option>Sacola</option>
+                        <option>Outro</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <label className="field">
+                    <span>Observação da bagagem</span>
+                    <textarea
+                      rows={2}
+                      value={luggageForm.notes}
+                      onChange={(event) => setLuggageForm((current) => ({ ...current, notes: event.target.value }))}
+                      placeholder="Ex.: mala preta grande com fita vermelha"
+                    />
+                  </label>
+                </>
+              )}
 
               {luggageFormError ? <div className="alert alert--danger">{luggageFormError}</div> : null}
 
               <button type="submit" className="primary-button" disabled={savingLuggage}>
                 {savingLuggage ? <LoaderCircle className="spin" /> : <PackagePlus />}
-                Cadastrar bagagem
+                {savingLuggage
+                  ? 'Salvando...'
+                  : luggageEntryMode === 'QUICK_SET'
+                    ? `Salvar ${quickVolumeCount} ${quickVolumeCount === 1 ? 'volume' : 'volumes'}`
+                    : 'Cadastrar bagagem'}
               </button>
             </form>
 
@@ -2187,17 +2363,17 @@ export function PassengersPage() {
                         <button
                           type="button"
                           className="luggage-photo-thumb"
-                          onClick={() => individualPhotoUrl && setPhotoViewer({ title: `Bagagem ${item.code}`, url: individualPhotoUrl })}
+                          onClick={() => individualPhotoUrl && setPhotoViewer({ title: `Bagagem ${luggageDisplayCode(item.code)}`, url: individualPhotoUrl })}
                           disabled={!individualPhotoUrl}
-                          aria-label={`Visualizar foto da bagagem ${item.code}`}
+                          aria-label={`Visualizar foto da bagagem ${luggageDisplayCode(item.code)}`}
                         >
-                          {individualPhotoUrl ? <img src={individualPhotoUrl} alt={`Bagagem ${item.code}`} /> : <Camera aria-hidden="true" />}
+                          {individualPhotoUrl ? <img src={individualPhotoUrl} alt={`Bagagem ${luggageDisplayCode(item.code)}`} /> : <Camera aria-hidden="true" />}
                         </button>
 
                         <div className="luggage-number">{index + 1}</div>
                         <div className="luggage-item__content">
-                          <strong>{item.code}</strong>
-                          <span>{item.luggageType} • {item.labelColor}</span>
+                          <strong>{luggageDisplayCode(item.code)}</strong>
+                          <span>{isAutomaticLuggageCode(item.code) ? 'Cadastro rápido por conjunto' : `${item.luggageType} • ${item.labelColor}`}</span>
                           <small>Cadastrada em {formatDateTime(item.createdAt)}</small>
                           <span className={`luggage-current-stage stage-${item.currentStage.toLowerCase()}`}>
                             {STAGE_LABELS[item.currentStage]}
@@ -2249,7 +2425,7 @@ export function PassengersPage() {
 
       <Modal
         open={Boolean(historyTarget)}
-        title={historyTarget ? `Histórico da bagagem ${historyTarget.code}` : 'Histórico da bagagem'}
+        title={historyTarget ? `Histórico da bagagem ${luggageDisplayCode(historyTarget.code)}` : 'Histórico da bagagem'}
         subtitle="Linha do tempo completa deste volume."
         onClose={() => {
           setHistoryTarget(null)

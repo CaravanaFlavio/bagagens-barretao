@@ -31,8 +31,12 @@ import {
   finalizeOperation,
   getLatestOperationEvidencePhoto,
   getOperationSnapshot,
+  getPassengerOutboundVolumeCount,
+  getPassengerSetPhoto,
+  getSetReconciliation,
   moveLuggageForOperation,
   saveOperationEvidencePhoto,
+  saveSetReconciliation,
 } from '../data/repository'
 import type {
   OperationKey,
@@ -41,6 +45,9 @@ import type {
   OperationSnapshot,
   OperationViewFilter,
   PhotoRecord,
+  SetReconciliation,
+  SetReconciliationOperationKey,
+  SetReconciliationResult,
 } from '../domain/types'
 import { compressPhoto } from '../utils/imageCompression'
 
@@ -63,6 +70,25 @@ function normalizeSearch(value: string) {
     .toLocaleUpperCase('pt-BR')
 }
 
+function displayLuggageCode(code: string) {
+  return code.startsWith('SEM-LACRE-') ? 'Sem lacre físico' : code
+}
+
+const SET_RECONCILIATION_LABELS: Record<SetReconciliationResult, string> = {
+  NO_RELEVANT_CHANGE: 'Sem alteração relevante',
+  REORGANIZED: 'Reorganizado / volumes agrupados',
+  SPLIT_INCREASED: 'Volumes separados / aumentou a quantidade',
+  POSSIBLE_MISSING: 'Possível volume faltante',
+  ADDITIONAL_VOLUME: 'Volume adicional',
+  OTHER: 'Outro',
+}
+
+function isSetReconciliationOperation(
+  operationKey: OperationKey,
+): operationKey is SetReconciliationOperationKey {
+  return operationKey === 'COLLECT_FIRST_WEEK' || operationKey === 'COLLECT_SECOND_WEEK'
+}
+
 function getFriendlyErrorMessage(error: unknown, fallback: string) {
   if (!(error instanceof Error)) return fallback
 
@@ -79,6 +105,7 @@ function getFriendlyErrorMessage(error: unknown, fallback: string) {
 
 export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps) {
   const definition = OPERATION_DEFINITIONS[operationKey]
+  const isCollectionOperation = isSetReconciliationOperation(operationKey)
   const [snapshot, setSnapshot] = useState<OperationSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [pageError, setPageError] = useState('')
@@ -103,13 +130,26 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
   const [wrongPassengerCheck, setWrongPassengerCheck] = useState<OperationScanCheck | null>(null)
   const [exceptionReason, setExceptionReason] = useState('')
 
+  const [originPhoto, setOriginPhoto] = useState<PhotoRecord | null>(null)
+  const originPhotoUrl = useMemo(
+    () => (originPhoto ? URL.createObjectURL(originPhoto.blob) : ''),
+    [originPhoto],
+  )
   const [passengerPhoto, setPassengerPhoto] = useState<PhotoRecord | null>(null)
   const passengerPhotoUrl = useMemo(
     () => (passengerPhoto ? URL.createObjectURL(passengerPhoto.blob) : ''),
     [passengerPhoto],
   )
   const [photoBusy, setPhotoBusy] = useState(false)
-  const [photoViewerOpen, setPhotoViewerOpen] = useState(false)
+  const [photoViewer, setPhotoViewer] = useState<{ title: string; url: string } | null>(null)
+
+  const [bulkFoundCount, setBulkFoundCount] = useState(0)
+  const [bulkProcessing, setBulkProcessing] = useState(false)
+  const [setReconciliation, setSetReconciliation] = useState<SetReconciliation | null>(null)
+  const [originalVolumeCount, setOriginalVolumeCount] = useState(0)
+  const [reconciliationResult, setReconciliationResult] =
+    useState<SetReconciliationResult>('NO_RELEVANT_CHANGE')
+  const [reconciliationNote, setReconciliationNote] = useState('')
 
   const [finalizeOpen, setFinalizeOpen] = useState(false)
   const [finalizeNote, setFinalizeNote] = useState('')
@@ -134,12 +174,23 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
       setSelectedPassengerId(null)
       setCode('')
       setFeedback(null)
+      setOriginPhoto(null)
       setPassengerPhoto(null)
+      setBulkFoundCount(0)
+      setSetReconciliation(null)
+      setOriginalVolumeCount(0)
+      setReconciliationResult('NO_RELEVANT_CHANGE')
+      setReconciliationNote('')
       void loadSnapshot()
     }, 0)
 
     return () => window.clearTimeout(timeoutId)
   }, [loadSnapshot])
+
+  useEffect(() => {
+    if (!originPhotoUrl) return
+    return () => URL.revokeObjectURL(originPhotoUrl)
+  }, [originPhotoUrl])
 
   useEffect(() => {
     if (!passengerPhotoUrl) return
@@ -161,11 +212,12 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
         !normalizedQuery ||
         group.passenger.normalizedName.includes(normalizedQuery) ||
         group.luggage.some((item) => item.normalizedCode.includes(normalizedQuery))
+      if (group.totalCount === 0) return false
+
       const matchesView =
         viewFilter === 'ALL' ||
-        (viewFilter === 'PENDING' && (group.pendingCount > 0 || group.totalCount === 0)) ||
+        (viewFilter === 'PENDING' && group.pendingCount > 0) ||
         (viewFilter === 'COMPLETED' &&
-          group.totalCount > 0 &&
           group.pendingCount === 0 &&
           group.unexpectedCount === 0) ||
         (viewFilter === 'UNEXPECTED' && group.unexpectedCount > 0)
@@ -181,16 +233,45 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
     setConfirmationCheck(null)
     setWrongPassengerCheck(null)
     setExceptionReason('')
+    setOriginPhoto(null)
     setPassengerPhoto(null)
+    setSetReconciliation(null)
+    setOriginalVolumeCount(0)
+    setReconciliationResult('NO_RELEVANT_CHANGE')
+    setReconciliationNote('')
+    setBulkFoundCount(0)
     setLoadingPassengerPhoto(true)
 
     try {
-      const photo = await getLatestOperationEvidencePhoto(operationKey, group.passenger.id)
-      setPassengerPhoto(photo ?? null)
+      const collectionOperation = isSetReconciliationOperation(operationKey)
+      const [origin, stagePhoto, reconciliation, outboundCount] = await Promise.all([
+        getPassengerSetPhoto(group.passenger.id),
+        getLatestOperationEvidencePhoto(operationKey, group.passenger.id),
+        collectionOperation
+          ? getSetReconciliation(operationKey, group.passenger.id)
+          : Promise.resolve(undefined),
+        collectionOperation
+          ? getPassengerOutboundVolumeCount(group.passenger.id)
+          : Promise.resolve(group.totalCount),
+      ])
+
+      setOriginPhoto(origin ?? null)
+      setPassengerPhoto(stagePhoto ?? null)
+
+      if (collectionOperation) {
+        const baseline = reconciliation?.originalQuantity ?? outboundCount
+        setSetReconciliation(reconciliation ?? null)
+        setOriginalVolumeCount(baseline)
+        setBulkFoundCount(reconciliation?.observedQuantity ?? baseline)
+        setReconciliationResult(reconciliation?.result ?? 'NO_RELEVANT_CHANGE')
+        setReconciliationNote(reconciliation?.note ?? '')
+      } else {
+        setBulkFoundCount(group.pendingCount)
+      }
     } catch (error) {
       setFeedback({
         tone: 'danger',
-        title: 'Não foi possível carregar a foto desta etapa',
+        title: 'Não foi possível carregar as fotos deste passageiro',
         message: getFriendlyErrorMessage(error, 'Tente abrir o passageiro novamente.'),
       })
     } finally {
@@ -200,7 +281,13 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
 
   const closePassenger = () => {
     setSelectedPassengerId(null)
+    setOriginPhoto(null)
     setPassengerPhoto(null)
+    setBulkFoundCount(0)
+    setSetReconciliation(null)
+    setOriginalVolumeCount(0)
+    setReconciliationResult('NO_RELEVANT_CHANGE')
+    setReconciliationNote('')
     setCode('')
     setFeedback(null)
     setConfirmationCheck(null)
@@ -338,6 +425,188 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
     }
   }
 
+  const handleConfirmSetReconciliation = async () => {
+    if (!selectedGroup || !isSetReconciliationOperation(operationKey)) return
+
+    const observedQuantity = Math.min(99, Math.max(0, Math.trunc(bulkFoundCount)))
+    const baseline = originalVolumeCount || selectedGroup.totalCount
+
+    if (!passengerPhoto) {
+      setFeedback({
+        tone: 'warning',
+        title: 'Foto atual do conjunto necessária',
+        message: `Tire uma foto das bagagens de ${selectedGroup.passenger.fullName} no recolhimento antes de concluir a conferência.`,
+      })
+      return
+    }
+
+    if (
+      reconciliationResult === 'NO_RELEVANT_CHANGE' &&
+      observedQuantity !== baseline
+    ) {
+      setFeedback({
+        tone: 'warning',
+        title: 'A quantidade mudou',
+        message:
+          'Se o número físico de volumes mudou, escolha “Reorganizado”, “Volumes separados”, “Volume adicional”, “Possível volume faltante” ou “Outro”. A diferença numérica não será tratada automaticamente como falta.',
+      })
+      return
+    }
+
+    if (
+      (reconciliationResult === 'POSSIBLE_MISSING' ||
+        reconciliationResult === 'OTHER') &&
+      !reconciliationNote.trim()
+    ) {
+      setFeedback({
+        tone: 'warning',
+        title: 'Observação necessária',
+        message: 'Descreva o que foi observado antes de salvar esta conferência.',
+      })
+      return
+    }
+
+    const pendingItems = selectedGroup.luggage.filter((item) => item.isPending)
+    let movedCount = 0
+
+    try {
+      setBulkProcessing(true)
+      setFeedback(null)
+
+      for (const item of pendingItems) {
+        await moveLuggageForOperation(operationKey, item.id, {
+          photoId: passengerPhoto.id,
+        })
+        movedCount += 1
+      }
+
+      const saved = await saveSetReconciliation({
+        passengerId: selectedGroup.passenger.id,
+        operationKey,
+        originalQuantity: baseline,
+        observedQuantity,
+        result: reconciliationResult,
+        note: reconciliationNote,
+        photoId: passengerPhoto.id,
+      })
+
+      setSetReconciliation(saved)
+      setOriginalVolumeCount(saved.originalQuantity)
+      setBulkFoundCount(saved.observedQuantity)
+
+      const isAttention = saved.result === 'POSSIBLE_MISSING'
+      setFeedback({
+        tone: isAttention ? 'warning' : 'success',
+        title: isAttention
+          ? 'Conjunto recolhido com pendência registrada'
+          : 'Conjunto conferido no retorno',
+        message: isAttention
+          ? `${selectedGroup.passenger.fullName}: ${saved.observedQuantity} volumes observados. A possível falta foi enviada para a Central de Pendências sem transformar a diferença numérica em volumes faltantes automáticos.`
+          : `${selectedGroup.passenger.fullName}: saída com ${saved.originalQuantity} e retorno observado com ${saved.observedQuantity}. Situação registrada como “${SET_RECONCILIATION_LABELS[saved.result]}”.`,
+      })
+      await loadSnapshot()
+    } catch (error) {
+      setFeedback({
+        tone: 'danger',
+        title:
+          movedCount > 0
+            ? 'Recolhimento parcialmente registrado'
+            : 'Não foi possível salvar a conferência',
+        message:
+          movedCount > 0
+            ? `${movedCount} ${movedCount === 1 ? 'registro interno avançou' : 'registros internos avançaram'} antes da falha. Reabra o passageiro e salve a conferência novamente; os volumes já movimentados não serão repetidos. ${getFriendlyErrorMessage(error, 'Tente novamente.')}`
+            : getFriendlyErrorMessage(error, 'Tente novamente.'),
+      })
+      await loadSnapshot()
+    } finally {
+      setBulkProcessing(false)
+    }
+  }
+
+  const handleConfirmBulk = async () => {
+    if (!selectedGroup) return
+    if (isCollectionOperation) {
+      await handleConfirmSetReconciliation()
+      return
+    }
+
+    const requestedCount = Math.min(
+      Math.max(0, Math.trunc(bulkFoundCount)),
+      selectedGroup.pendingCount,
+    )
+
+    if (requestedCount <= 0) {
+      setFeedback({
+        tone: 'warning',
+        title: 'Informe quantos volumes foram encontrados',
+        message: 'Use os botões − e + ou digite a quantidade antes de confirmar o conjunto.',
+      })
+      return
+    }
+
+    if (!passengerPhoto) {
+      setFeedback({
+        tone: 'warning',
+        title: 'Foto atual do conjunto necessária',
+        message: `Tire uma foto das bagagens de ${selectedGroup.passenger.fullName} nesta etapa antes de confirmar o conjunto.`,
+      })
+      return
+    }
+
+    const pendingItems = selectedGroup.luggage
+      .filter((item) => item.isPending)
+      .slice(0, requestedCount)
+
+    if (pendingItems.length === 0) {
+      setFeedback({
+        tone: 'warning',
+        title: 'Nenhum volume pendente',
+        message: 'Este passageiro não possui volumes pendentes para confirmar nesta etapa.',
+      })
+      return
+    }
+
+    let movedCount = 0
+
+    try {
+      setBulkProcessing(true)
+      setFeedback(null)
+
+      for (const item of pendingItems) {
+        await moveLuggageForOperation(operationKey, item.id, {
+          photoId: passengerPhoto.id,
+        })
+        movedCount += 1
+      }
+
+      const remainingCount = Math.max(0, selectedGroup.pendingCount - movedCount)
+      setBulkFoundCount(remainingCount)
+      setFeedback({
+        tone: 'success',
+        title: `${movedCount} ${movedCount === 1 ? 'volume confirmado' : 'volumes confirmados'}`,
+        message:
+          remainingCount === 0
+            ? `${selectedGroup.passenger.fullName} ficou sem volumes pendentes nesta etapa.`
+            : `Ainda ${remainingCount === 1 ? 'resta 1 volume' : `restam ${remainingCount} volumes`} para ${selectedGroup.passenger.fullName}.`,
+      })
+      await loadSnapshot()
+    } catch (error) {
+      const remainingCount = Math.max(0, selectedGroup.pendingCount - movedCount)
+      setBulkFoundCount(remainingCount)
+      setFeedback({
+        tone: 'danger',
+        title: movedCount > 0 ? 'Conjunto parcialmente registrado' : 'Não foi possível registrar o conjunto',
+        message:
+          movedCount > 0
+            ? `${movedCount} de ${requestedCount} volumes foram gravados antes da falha. Não repita os que já foram confirmados. ${getFriendlyErrorMessage(error, 'Tente novamente com os volumes restantes.')}`
+            : getFriendlyErrorMessage(error, 'Tente novamente.'),
+      })
+      await loadSnapshot()
+    } finally {
+      setBulkProcessing(false)
+    }
+  }
+
   const handleSubmitCode = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     void processCode(code)
@@ -401,8 +670,7 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
     if (!snapshot) return
     const hasIssues =
       snapshot.pendingLuggage > 0 ||
-      snapshot.unexpectedLuggage > 0 ||
-      snapshot.passengersWithoutLuggage.length > 0
+      snapshot.unexpectedLuggage > 0
 
     if (hasIssues && !finalizeNote.trim()) return
 
@@ -441,8 +709,7 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
 
   const hasFinalizeIssues =
     snapshot.pendingLuggage > 0 ||
-    snapshot.unexpectedLuggage > 0 ||
-    snapshot.passengersWithoutLuggage.length > 0
+    snapshot.unexpectedLuggage > 0
 
   return (
     <div className="luggage-operation-page">
@@ -567,7 +834,7 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
         <div>
           <p className="eyebrow">Fechamento da etapa</p>
           <h2>Conferir antes de finalizar</h2>
-          <p>O aplicativo mostrará bagagens restantes, situações fora do fluxo e passageiros sem bagagens.</p>
+          <p>O aplicativo mostrará somente bagagens restantes e situações fora do fluxo desta etapa.</p>
         </div>
         <button type="button" className="primary-button" onClick={() => setFinalizeOpen(true)}>
           <ShieldCheck aria-hidden="true" />
@@ -603,13 +870,45 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
               </div>
             </section>
 
+            <section className={`operation-photo-card ${originPhoto ? 'has-photo' : 'is-pending'}`}>
+              <div className="operation-photo-card__content">
+                <div className="form-section-title">
+                  <Eye aria-hidden="true" />
+                  <div>
+                    <strong>Foto de saída de Carmópolis</strong>
+                    <span>Referência visual original para reconhecer o conjunto no chão.</span>
+                  </div>
+                </div>
+                <p className={originPhoto ? 'photo-status photo-status--ok' : 'photo-status photo-status--pending'}>
+                  {loadingPassengerPhoto
+                    ? 'Carregando fotografia original...'
+                    : originPhoto
+                      ? `Foto original salva em ${formatDateTime(originPhoto.createdAt)}.`
+                      : 'Este passageiro não possui foto original do conjunto cadastrada.'}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="operation-photo-preview"
+                onClick={() => originPhotoUrl && setPhotoViewer({
+                  title: `Foto de saída de Carmópolis · ${selectedGroup.passenger.fullName}`,
+                  url: originPhotoUrl,
+                })}
+                disabled={!originPhotoUrl}
+              >
+                {originPhotoUrl ? <img src={originPhotoUrl} alt={`Bagagens de saída de ${selectedGroup.passenger.fullName}`} /> : <ImageOff aria-hidden="true" />}
+                {originPhotoUrl ? <span><Eye /> Ampliar</span> : null}
+              </button>
+            </section>
+
             <section className={`operation-photo-card ${passengerPhoto ? 'has-photo' : 'is-pending'}`}>
               <div className="operation-photo-card__content">
                 <div className="form-section-title">
                   <Camera aria-hidden="true" />
                   <div>
-                    <strong>Foto do conjunto de {selectedGroup.passenger.fullName}</strong>
-                    <span>Comprovante exclusivo deste passageiro nesta etapa.</span>
+                    <strong>Foto atual do conjunto</strong>
+                    <span>Registre como as bagagens estão nesta etapa antes de confirmar os volumes.</span>
                   </div>
                 </div>
                 <p className={passengerPhoto ? 'photo-status photo-status--ok' : 'photo-status photo-status--pending'}>
@@ -630,19 +929,266 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
               <button
                 type="button"
                 className="operation-photo-preview"
-                onClick={() => passengerPhoto && setPhotoViewerOpen(true)}
-                disabled={!passengerPhoto}
+                onClick={() => passengerPhotoUrl && setPhotoViewer({
+                  title: `Foto desta etapa · ${selectedGroup.passenger.fullName}`,
+                  url: passengerPhotoUrl,
+                })}
+                disabled={!passengerPhotoUrl}
               >
                 {passengerPhotoUrl ? <img src={passengerPhotoUrl} alt={`Conjunto de bagagens de ${selectedGroup.passenger.fullName}`} /> : <ImageOff aria-hidden="true" />}
                 {passengerPhoto ? <span><Eye /> Ampliar</span> : null}
               </button>
             </section>
 
+            {isCollectionOperation ? (
+              <section className="operation-scan-card">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Conferência do conjunto no retorno</p>
+                    <h2>Reconciliação visual do passageiro</h2>
+                  </div>
+                </div>
+
+                <div className="operation-passenger-guidance">
+                  <PackageCheck aria-hidden="true" />
+                  <div>
+                    <strong>A quantidade é uma referência, não uma sentença</strong>
+                    <p>
+                      Compare a foto de saída com o conjunto atual. Se 4 volumes viraram 2 porque foram agrupados,
+                      registre 2 e marque “Reorganizado”. O aplicativo não transforma essa diferença em duas faltas.
+                    </p>
+                  </div>
+                </div>
+
+                {setReconciliation ? (
+                  <div className={`operation-feedback ${setReconciliation.result === 'POSSIBLE_MISSING' ? 'operation-feedback--warning' : 'operation-feedback--success'}`}>
+                    {setReconciliation.result === 'POSSIBLE_MISSING' ? <CircleAlert /> : <CheckCircle2 />}
+                    <div>
+                      <strong>Conferência registrada em {formatDateTime(setReconciliation.checkedAt)}</strong>
+                      <p>
+                        Saída: {setReconciliation.originalQuantity} · Retorno observado: {setReconciliation.observedQuantity} ·
+                        {' '}{SET_RECONCILIATION_LABELS[setReconciliation.result]}.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+
+                <section className="passenger-operation-progress">
+                  <div>
+                    <span>Saída de Carmópolis</span>
+                    <strong>{originalVolumeCount}</strong>
+                  </div>
+                  <div>
+                    <span>Observados agora</span>
+                    <strong>{bulkFoundCount}</strong>
+                  </div>
+                  <div className={bulkFoundCount === originalVolumeCount ? 'is-completed' : 'has-pending'}>
+                    <span>Diferença numérica</span>
+                    <strong>{bulkFoundCount - originalVolumeCount > 0 ? '+' : ''}{bulkFoundCount - originalVolumeCount}</strong>
+                  </div>
+                  <div className={reconciliationResult === 'POSSIBLE_MISSING' ? 'has-unexpected' : 'is-completed'}>
+                    <span>Situação</span>
+                    <strong>{reconciliationResult === 'POSSIBLE_MISSING' ? 'Atenção' : 'Conferir'}</strong>
+                  </div>
+                </section>
+
+                <div className="operation-code-form">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setBulkFoundCount((current) => Math.max(0, current - 1))}
+                    disabled={bulkProcessing || bulkFoundCount <= 0}
+                    aria-label="Diminuir quantidade observada"
+                  >
+                    −
+                  </button>
+
+                  <label className="field operation-code-field">
+                    <span>Volumes físicos observados</span>
+                    <div className="operation-code-input">
+                      <BriefcaseBusiness aria-hidden="true" />
+                      <input
+                        type="number"
+                        min={0}
+                        max={99}
+                        value={bulkFoundCount}
+                        onChange={(event) => {
+                          const nextValue = Number(event.target.value)
+                          setBulkFoundCount(
+                            Number.isFinite(nextValue)
+                              ? Math.min(99, Math.max(0, Math.trunc(nextValue)))
+                              : 0,
+                          )
+                        }}
+                        inputMode="numeric"
+                      />
+                    </div>
+                  </label>
+
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setBulkFoundCount((current) => Math.min(99, current + 1))}
+                    disabled={bulkProcessing || bulkFoundCount >= 99}
+                    aria-label="Aumentar quantidade observada"
+                  >
+                    +
+                  </button>
+                </div>
+
+                <label className="field">
+                  <span>Como ficou o conjunto no retorno?</span>
+                  <select
+                    value={reconciliationResult}
+                    onChange={(event) =>
+                      setReconciliationResult(event.target.value as SetReconciliationResult)
+                    }
+                  >
+                    <option value="NO_RELEVANT_CHANGE">Sem alteração relevante</option>
+                    <option value="REORGANIZED">Reorganizado / volumes agrupados</option>
+                    <option value="SPLIT_INCREASED">Volumes separados / aumentou a quantidade</option>
+                    <option value="POSSIBLE_MISSING">Possível volume faltante</option>
+                    <option value="ADDITIONAL_VOLUME">Volume adicional</option>
+                    <option value="OTHER">Outro</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>
+                    Observação
+                    {(reconciliationResult === 'POSSIBLE_MISSING' || reconciliationResult === 'OTHER')
+                      ? ' (obrigatória)'
+                      : ' (opcional)'}
+                  </span>
+                  <textarea
+                    value={reconciliationNote}
+                    onChange={(event) => setReconciliationNote(event.target.value)}
+                    placeholder={
+                      reconciliationResult === 'REORGANIZED'
+                        ? 'Ex.: Os 4 volumes da ida foram acomodados em 2 volumes para o retorno.'
+                        : reconciliationResult === 'POSSIBLE_MISSING'
+                          ? 'Descreva o que parece estar faltando e o que já foi conferido.'
+                          : 'Registre algo relevante sobre a organização atual do conjunto.'
+                    }
+                    rows={3}
+                  />
+                </label>
+
+                <p className="photo-status photo-status--pending">
+                  A diferença entre saída e retorno fica registrada como informação. Somente “Possível volume faltante”
+                  gera uma pendência automática. Nenhum volume é criado ou apagado apenas por causa da quantidade observada.
+                </p>
+
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void handleConfirmBulk()}
+                  disabled={bulkProcessing || loadingPassengerPhoto}
+                >
+                  {bulkProcessing ? <LoaderCircle className="spin" /> : <PackageCheck />}
+                  {selectedGroup.pendingCount > 0
+                    ? 'Conferir conjunto e recolher'
+                    : setReconciliation
+                      ? 'Atualizar conferência'
+                      : 'Salvar conferência'}
+                </button>
+              </section>
+            ) : (
+              <section className="operation-scan-card">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Modo rápido por conjunto</p>
+                    <h2>Confirmar volumes encontrados</h2>
+                  </div>
+                </div>
+
+                <div className="operation-passenger-guidance">
+                  <PackageCheck aria-hidden="true" />
+                  <div>
+                    <strong>Use quando os volumes não têm identificação física individual confiável</strong>
+                    <p>
+                      Compare com a foto de saída, conte o conjunto no chão, tire a foto atual e confirme a quantidade encontrada.
+                      O aplicativo movimentará internamente apenas volumes que ainda estão pendentes.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="operation-code-form">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setBulkFoundCount((current) => Math.max(0, current - 1))}
+                    disabled={bulkProcessing || bulkFoundCount <= 0}
+                    aria-label="Diminuir quantidade encontrada"
+                  >
+                    −
+                  </button>
+
+                  <label className="field operation-code-field">
+                    <span>Volumes encontrados</span>
+                    <div className="operation-code-input">
+                      <BriefcaseBusiness aria-hidden="true" />
+                      <input
+                        type="number"
+                        min={0}
+                        max={selectedGroup.pendingCount}
+                        value={bulkFoundCount}
+                        onChange={(event) => {
+                          const nextValue = Number(event.target.value)
+                          setBulkFoundCount(
+                            Number.isFinite(nextValue)
+                              ? Math.min(Math.max(0, Math.trunc(nextValue)), selectedGroup.pendingCount)
+                              : 0,
+                          )
+                        }}
+                        inputMode="numeric"
+                      />
+                    </div>
+                  </label>
+
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setBulkFoundCount((current) => Math.min(selectedGroup.pendingCount, current + 1))}
+                    disabled={bulkProcessing || bulkFoundCount >= selectedGroup.pendingCount}
+                    aria-label="Aumentar quantidade encontrada"
+                  >
+                    +
+                  </button>
+
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void handleConfirmBulk()}
+                    disabled={bulkProcessing || loadingPassengerPhoto || selectedGroup.pendingCount === 0}
+                  >
+                    {bulkProcessing ? <LoaderCircle className="spin" /> : <PackageCheck />}
+                    Confirmar conjunto
+                  </button>
+                </div>
+
+                <p className="photo-status photo-status--pending">
+                  Esperados nesta etapa: {selectedGroup.pendingCount} {selectedGroup.pendingCount === 1 ? 'volume pendente' : 'volumes pendentes'}.
+                  Se encontrar menos, confirme somente a quantidade localizada. Os demais continuarão como restantes.
+                </p>
+              </section>
+            )}
+
+            {feedback ? (
+              <div className={`operation-feedback operation-feedback--${feedback.tone}`}>
+                {feedback.tone === 'success' ? <CheckCircle2 /> : feedback.tone === 'warning' ? <CircleAlert /> : <ShieldAlert />}
+                <div>
+                  <strong>{feedback.title}</strong>
+                  <p>{feedback.message}</p>
+                </div>
+              </div>
+            ) : null}
+
             <section className="operation-scan-card">
               <div className="section-heading">
                 <div>
-                  <p className="eyebrow">Leitura deste passageiro</p>
-                  <h2>Registrar uma bagagem</h2>
+                  <p className="eyebrow">Identificação individual</p>
+                  <h2>Registrar por código ou lacre</h2>
                 </div>
               </div>
 
@@ -674,15 +1220,6 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
                 </button>
               </form>
 
-              {feedback ? (
-                <div className={`operation-feedback operation-feedback--${feedback.tone}`}>
-                  {feedback.tone === 'success' ? <CheckCircle2 /> : feedback.tone === 'warning' ? <CircleAlert /> : <ShieldAlert />}
-                  <div>
-                    <strong>{feedback.title}</strong>
-                    <p>{feedback.message}</p>
-                  </div>
-                </div>
-              ) : null}
             </section>
 
             <section className="passenger-operation-luggage-panel">
@@ -690,7 +1227,7 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
                 <BriefcaseBusiness aria-hidden="true" />
                 <div>
                   <strong>Volumes de {selectedGroup.passenger.fullName}</strong>
-                  <span>Confira os códigos antes de fechar este passageiro.</span>
+                  <span>Os registros abaixo continuam individuais por segurança do histórico, mesmo quando o conjunto é confirmado de uma vez.</span>
                 </div>
               </div>
 
@@ -702,8 +1239,8 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
                     <div className="operation-luggage-row" key={item.id}>
                       <span className="luggage-number"><BriefcaseBusiness /></span>
                       <div>
-                        <strong>{item.code}</strong>
-                        <span>{item.luggageType} · {item.labelColor}</span>
+                        <strong>{displayLuggageCode(item.code)}</strong>
+                        <span>{item.luggageType} · {item.labelColor || 'Sem cor física'}</span>
                       </div>
                       <span className={`operation-stage-badge ${item.isCompleted ? 'is-completed' : item.isPending ? 'is-pending' : 'is-unexpected'}`}>
                         {STAGE_LABELS[item.currentStage]}
@@ -818,18 +1355,8 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
           <div className="finalize-issue-grid">
             <FinalizeIssue label="Bagagens restantes" value={snapshot.pendingLuggage} />
             <FinalizeIssue label="Fora do fluxo" value={snapshot.unexpectedLuggage} />
-            <FinalizeIssue label="Passageiros sem bagagem" value={snapshot.passengersWithoutLuggage.length} />
             <FinalizeIssue label="Bagagens conferidas" value={snapshot.completedLuggage} positive />
           </div>
-
-          {snapshot.passengersWithoutLuggage.length > 0 ? (
-            <div className="finalize-detail-list">
-              <strong>Passageiros sem nenhuma bagagem cadastrada</strong>
-              {snapshot.passengersWithoutLuggage.map((passenger) => (
-                <span key={passenger.id}>{passenger.fullName} · {passenger.city}</span>
-              ))}
-            </div>
-          ) : null}
 
           <label className="field">
             <span>{hasFinalizeIssues ? 'Justificativa obrigatória para finalizar' : 'Observação da conferência (opcional)'}</span>
@@ -856,9 +1383,14 @@ export function LuggageOperationPage({ operationKey }: LuggageOperationPageProps
         </div>
       </Modal>
 
-      <Modal open={photoViewerOpen} title={selectedGroup ? `Foto de ${selectedGroup.passenger.fullName}` : 'Foto do passageiro'} onClose={() => setPhotoViewerOpen(false)} size="large">
+      <Modal
+        open={Boolean(photoViewer)}
+        title={photoViewer?.title ?? 'Fotografia'}
+        onClose={() => setPhotoViewer(null)}
+        size="large"
+      >
         <div className="photo-viewer">
-          {passengerPhotoUrl ? <img src={passengerPhotoUrl} alt="Foto do conjunto nesta etapa" /> : null}
+          {photoViewer ? <img src={photoViewer.url} alt={photoViewer.title} /> : null}
         </div>
       </Modal>
     </div>

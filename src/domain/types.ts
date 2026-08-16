@@ -32,6 +32,25 @@ export type PassengerDocumentType = 'CPF' | 'RG' | 'UNKNOWN'
 export type PassengerBusType = 'DOUBLE_DECKER' | 'CONVENTIONAL' | 'UNSPECIFIED'
 export type PassengerReviewStatus = 'CONFIRMED' | 'REVIEW'
 export type PassengerSourceRole = 'PASSENGER' | 'GUIDE'
+export type UnidentifiedLuggageStatus = 'OPEN' | 'RESOLVED'
+export type UnidentifiedLuggageLocation =
+  | 'WAREHOUSE_INITIAL'
+  | 'TRAILER_OUTBOUND'
+  | 'BARRETOS'
+  | 'TRAILER_RETURN'
+  | 'WAREHOUSE_RETURN'
+
+export type SetReconciliationOperationKey =
+  | 'COLLECT_FIRST_WEEK'
+  | 'COLLECT_SECOND_WEEK'
+
+export type SetReconciliationResult =
+  | 'NO_RELEVANT_CHANGE'
+  | 'REORGANIZED'
+  | 'SPLIT_INCREASED'
+  | 'POSSIBLE_MISSING'
+  | 'ADDITIONAL_VOLUME'
+  | 'OTHER'
 
 export interface Passenger {
   id: string
@@ -69,8 +88,64 @@ export interface Luggage {
   luggageType: string
   notes: string
   currentStage: LuggageStage
+  unidentifiedSourceId?: string
+  foundUnidentifiedAt?: string
+  foundUnidentifiedLocation?: UnidentifiedLuggageLocation
   createdAt: string
   updatedAt: string
+}
+
+export interface UnidentifiedLuggage {
+  id: string
+  status: UnidentifiedLuggageStatus
+  quantity: number
+  foundLocation: UnidentifiedLuggageLocation
+  description: string
+  notes: string
+  photoId: string
+  foundAt: string
+  createdAt: string
+  updatedAt: string
+  resolvedAt?: string
+  resolvedPassengerId?: string
+  linkedLuggageIds: string[]
+}
+
+export interface UnidentifiedLuggageInput {
+  quantity: number
+  foundLocation: UnidentifiedLuggageLocation
+  description: string
+  notes: string
+  photo: PhotoInput
+}
+
+export interface ResolveUnidentifiedLuggageInput {
+  passengerId: string
+  currentStage: LuggageStage
+}
+
+export interface SetReconciliation {
+  id: string
+  passengerId: string
+  operationKey: SetReconciliationOperationKey
+  originalQuantity: number
+  observedQuantity: number
+  result: SetReconciliationResult
+  note: string
+  photoId: string
+  checkedAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SetReconciliationInput {
+  passengerId: string
+  operationKey: SetReconciliationOperationKey
+  originalQuantity: number
+  observedQuantity: number
+  result: SetReconciliationResult
+  note: string
+  photoId: string
 }
 
 export interface PhotoRecord {
@@ -141,6 +216,7 @@ export interface DashboardSummary {
   luggageCount: number
   pendingCount: number
   passengerReviewCount: number
+  unidentifiedLuggageCount: number
 }
 
 export interface PassengerImport2026Status {
@@ -368,6 +444,7 @@ export type CentralPendencyKind =
   | 'MOVEMENT_EXCEPTION'
   | 'CLOSURE_DIVERGENCE'
   | 'CITY_TRANSFER_DIVERGENCE'
+  | 'SET_RECONCILIATION_MISSING'
 
 export interface CentralPendency {
   id: string
@@ -378,6 +455,7 @@ export interface CentralPendency {
   movement?: LuggageMovement
   closure?: OperationClosure
   cityTransfer?: CityTransfer
+  setReconciliation?: SetReconciliation
 }
 
 export interface LuggageReportItem extends Luggage {
@@ -412,12 +490,14 @@ export interface PendenciesReport {
   passengerWithoutLuggageCount: number
   exceptionCount: number
   divergentClosureCount: number
+  setReconciliationPendencyCount: number
   activePendencyCount: number
   stageCounts: Record<LuggageStage, number>
   pendencies: CentralPendency[]
   luggage: LuggageReportItem[]
   movementTimeline: MovementReportItem[]
   closures: OperationClosure[]
+  setReconciliations: SetReconciliation[]
   citySummaries: CityReportSummary[]
   periodSummaries: PeriodReportSummary[]
 }
